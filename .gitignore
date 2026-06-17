@@ -1,2 +1,3 @@
-# Archivos Markdown — trabajo local, no se suben al repositorio
+# Archivos Markdown locales (excepto README.md)
 *.md
+!README.md
