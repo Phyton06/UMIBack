@@ -1,0 +1,99 @@
+package model
+
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// RideStatus representa el estado de un viaje.
+type RideStatus string
+
+const (
+	StatusRequested  RideStatus = "REQUESTED"
+	StatusAccepted   RideStatus = "ACCEPTED"
+	StatusEnRoute    RideStatus = "EN_ROUTE"
+	StatusArrived    RideStatus = "ARRIVED"
+	StatusInProgress RideStatus = "IN_PROGRESS"
+	StatusCompleted  RideStatus = "COMPLETED"
+	StatusCancelled  RideStatus = "CANCELLED"
+)
+
+// transitionMatrix define las transiciones válidas para cada estado.
+// Los estados terminales (COMPLETED, CANCELLED) no aparecen como origen
+// porque no tienen transiciones de salida.
+var transitionMatrix = map[RideStatus][]RideStatus{
+	StatusRequested:  {StatusAccepted, StatusCancelled},
+	StatusAccepted:   {StatusEnRoute, StatusCancelled},
+	StatusEnRoute:    {StatusArrived, StatusCancelled},
+	StatusArrived:    {StatusInProgress, StatusCancelled},
+	StatusInProgress: {StatusCompleted, StatusCancelled},
+}
+
+// transitionOpts almacena opciones para validar una transición.
+type transitionOpts struct {
+	systemAction bool
+}
+
+// TransitionOption es una función que modifica las opciones de transición.
+type TransitionOption func(*transitionOpts)
+
+// WithSystemAction marca la transición como originada por el sistema,
+// necesaria para la compuerta IN_PROGRESS → CANCELLED.
+func WithSystemAction() TransitionOption {
+	return func(o *transitionOpts) {
+		o.systemAction = true
+	}
+}
+
+// Ride representa un viaje de una plataforma de ride-hailing.
+type Ride struct {
+	ID                 uuid.UUID  `json:"id"`
+	RiderID            uuid.UUID  `json:"rider_id"`
+	DriverID           *uuid.UUID `json:"driver_id,omitempty"`
+	Status             RideStatus `json:"status"`
+	CancellationReason *string    `json:"cancellation_reason,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+}
+
+// IsTerminal retorna true si el estado es terminal
+// (COMPLETED o CANCELLED).
+func (s RideStatus) IsTerminal() bool {
+	return s == StatusCompleted || s == StatusCancelled
+}
+
+// CanTransitionTo valida si se puede transicionar del estado actual
+// al estado destino. Acepta opciones como WithSystemAction para
+// la compuerta IN_PROGRESS → CANCELLED.
+func (s RideStatus) CanTransitionTo(target RideStatus, opts ...TransitionOption) bool {
+	// Los estados terminales no admiten transiciones de salida.
+	if s.IsTerminal() {
+		return false
+	}
+
+	// Compuerta: IN_PROGRESS → CANCELLED solo si el sistema lo autoriza.
+	if s == StatusInProgress && target == StatusCancelled {
+		var cfg transitionOpts
+		for _, opt := range opts {
+			opt(&cfg)
+		}
+		return cfg.systemAction
+	}
+
+	for _, allowed := range transitionMatrix[s] {
+		if allowed == target {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidTransitions retorna la lista de estados destino válidos
+// desde el estado actual. Retorna nil para estados terminales.
+func (s RideStatus) ValidTransitions() []RideStatus {
+	if s.IsTerminal() {
+		return nil
+	}
+	return transitionMatrix[s]
+}
