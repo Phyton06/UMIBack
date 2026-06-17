@@ -1,4 +1,4 @@
-.PHONY: build run test tidy
+.PHONY: build run test tidy migrate-up migrate-down
 
 # Compila el binario del servidor
 build:
@@ -15,3 +15,12 @@ test:
 # Limpia las dependencias del módulo
 tidy:
 	go mod tidy
+
+# Ejecuta migraciones pendientes (requiere DB_URL)
+migrate-up:
+	go run ./cmd/server
+
+# No implementado: migraciones down requieren comando separado
+migrate-down:
+	@echo "Usa 'migrate-down' directamente con golang-migrate CLI"
+	@echo "Ejemplo: migrate -path internal/db/migrations -database \"$$DB_URL\" down 1"

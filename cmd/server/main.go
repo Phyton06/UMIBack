@@ -33,7 +33,8 @@ func main() {
 		slog.Error("error al crear pool de conexiones", "error", err)
 		os.Exit(1)
 	}
-	defer pool.Close()
+	// El pool se cierra explícitamente en el graceful shutdown (línea 70).
+	// Sin defer para evitar doble cierre.
 
 	if err := db.RunMigrations(pool); err != nil {
 		slog.Error("error al ejecutar migraciones", "error", err)

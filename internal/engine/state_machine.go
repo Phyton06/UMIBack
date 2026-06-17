@@ -25,7 +25,8 @@ var TransitionMatrix = map[model.RideStatus][]model.RideStatus{
 
 // CanTransition valida si la transición de current a target es
 // válida, aplicando las opciones proporcionadas.
-func CanTransition(current, target model.RideStatus, opts ...model.TransitionOption) bool {
+// Retorna nil si es válida, o un error descriptivo si no.
+func CanTransition(current, target model.RideStatus, opts ...model.TransitionOption) error {
 	return current.CanTransitionTo(target, opts...)
 }
 

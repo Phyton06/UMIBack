@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +19,18 @@ const (
 	StatusCompleted  RideStatus = "COMPLETED"
 	StatusCancelled  RideStatus = "CANCELLED"
 )
+
+// ErrInvalidTransition se retorna cuando una transición entre estados
+// de viaje no es válida.
+type ErrInvalidTransition struct {
+	Current RideStatus
+	Target  RideStatus
+	Reason  string
+}
+
+func (e *ErrInvalidTransition) Error() string {
+	return fmt.Sprintf("transicion invalida: de %s a %s: %s", e.Current, e.Target, e.Reason)
+}
 
 // transitionMatrix define las transiciones válidas para cada estado.
 // Los estados terminales (COMPLETED, CANCELLED) no aparecen como origen
@@ -64,29 +77,41 @@ func (s RideStatus) IsTerminal() bool {
 }
 
 // CanTransitionTo valida si se puede transicionar del estado actual
-// al estado destino. Acepta opciones como WithSystemAction para
-// la compuerta IN_PROGRESS → CANCELLED.
-func (s RideStatus) CanTransitionTo(target RideStatus, opts ...TransitionOption) bool {
-	// Los estados terminales no admiten transiciones de salida.
+// al estado destino. Retorna nil si es válida, o un error descriptivo
+// si no. Acepta opciones como WithSystemAction para la compuerta
+// IN_PROGRESS → CANCELLED.
+func (s RideStatus) CanTransitionTo(target RideStatus, opts ...TransitionOption) error {
 	if s.IsTerminal() {
-		return false
+		return &ErrInvalidTransition{
+			Current: s, Target: target,
+			Reason: "el estado es terminal y no admite transiciones de salida",
+		}
 	}
 
-	// Compuerta: IN_PROGRESS → CANCELLED solo si el sistema lo autoriza.
 	if s == StatusInProgress && target == StatusCancelled {
 		var cfg transitionOpts
 		for _, opt := range opts {
 			opt(&cfg)
 		}
-		return cfg.systemAction
+		if !cfg.systemAction {
+			return &ErrInvalidTransition{
+				Current: s, Target: target,
+				Reason: "requiere autorizacion del sistema (WithSystemAction)",
+			}
+		}
+		return nil
 	}
 
 	for _, allowed := range transitionMatrix[s] {
 		if allowed == target {
-			return true
+			return nil
 		}
 	}
-	return false
+
+	return &ErrInvalidTransition{
+		Current: s, Target: target,
+		Reason: fmt.Sprintf("transicion no permitida; las validas son: %v", transitionMatrix[s]),
+	}
 }
 
 // ValidTransitions retorna la lista de estados destino válidos
