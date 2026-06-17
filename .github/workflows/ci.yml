@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main, desarrollo/**]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true
+
+      - name: dependencias
+        run: go mod tidy
+
+      - name: compilacion
+        run: go build ./...
+
+      - name: vet
+        run: go vet ./...
+
+      - name: pruebas
+        run: go test ./... -count=1

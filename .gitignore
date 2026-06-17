@@ -1,3 +1,4 @@
-# Archivos Markdown locales (excepto README.md)
+# Archivos Markdown locales (excepto README.md y openspec/)
 *.md
 !README.md
+!openspec/**
