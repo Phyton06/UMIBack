@@ -17,10 +17,11 @@ import (
 	"github.com/Phyton06/UMIBack/internal/auth"
 )
 
-// Pool define las operaciones de base de datos que usan los handlers de auth.
+// Pool define las operaciones de base de datos que usan los handlers de auth y rides.
 // pgxpool.Pool y pgxmock.Pool satisfacen esta interfaz.
 type Pool interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
