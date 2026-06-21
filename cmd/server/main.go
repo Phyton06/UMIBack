@@ -53,6 +53,10 @@ func main() {
 	mux.HandleFunc("POST /auth/verify-otp", api.VerifyOTP(pool, jwtSecret))
 	mux.HandleFunc("POST /auth/refresh", api.RefreshToken(pool, jwtSecret))
 	mux.Handle("POST /auth/logout", auth.Auth(jwtSecret)(api.Logout(pool)))
+	mux.Handle("POST /rides", auth.Auth(jwtSecret)(auth.RequireRole("rider")(http.HandlerFunc(api.CreateRide(pool)))))
+	mux.Handle("GET /rides/{id}", auth.Auth(jwtSecret)(auth.RequireRole("rider", "driver")(http.HandlerFunc(api.GetRide(pool)))))
+	mux.Handle("GET /rides", auth.Auth(jwtSecret)(auth.RequireRole("rider", "driver")(http.HandlerFunc(api.ListRides(pool)))))
+	mux.Handle("PATCH /rides/{id}/cancel", auth.Auth(jwtSecret)(auth.RequireRole("rider", "driver")(http.HandlerFunc(api.CancelRide(pool)))))
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.HTTPPort,
