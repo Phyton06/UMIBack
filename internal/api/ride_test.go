@@ -1378,13 +1378,13 @@ func TestCompleteRide_HappyPath_Returns200(t *testing.T) {
 	passengerID := uuid.New()
 	rideID := uuid.New()
 
-	mock.ExpectQuery("SELECT passenger_id, driver_id, status FROM rides WHERE id").
+	mock.ExpectQuery("SELECT passenger_id, driver_id, status, ST_Distance").
 		WithArgs(rideID).
-		WillReturnRows(pgxmock.NewRows([]string{"passenger_id", "driver_id", "status"}).
-			AddRow(passengerID, &userID, "IN_PROGRESS"))
+		WillReturnRows(pgxmock.NewRows([]string{"passenger_id", "driver_id", "status", "st_distance"}).
+			AddRow(passengerID, &userID, "IN_PROGRESS", 10000.0))
 
 	mock.ExpectExec("UPDATE rides SET status").
-		WithArgs(rideID).
+		WithArgs(rideID, 80.0).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	req := httptest.NewRequest("PATCH", "/rides/"+rideID.String()+"/complete", nil)
@@ -1394,7 +1394,7 @@ func TestCompleteRide_HappyPath_Returns200(t *testing.T) {
 	})
 	req = req.WithContext(ctx)
 	w := httptest.NewRecorder()
-	CompleteRide(mock)(w, req)
+	CompleteRide(mock, 8.0, 25.0)(w, req)
 
 	resp := w.Result()
 	defer resp.Body.Close()
@@ -1428,10 +1428,10 @@ func TestCompleteRide_WrongStatus_Returns400(t *testing.T) {
 	passengerID := uuid.New()
 	rideID := uuid.New()
 
-	mock.ExpectQuery("SELECT passenger_id, driver_id, status FROM rides WHERE id").
+	mock.ExpectQuery("SELECT passenger_id, driver_id, status, ST_Distance").
 		WithArgs(rideID).
-		WillReturnRows(pgxmock.NewRows([]string{"passenger_id", "driver_id", "status"}).
-			AddRow(passengerID, &userID, "REQUESTED"))
+		WillReturnRows(pgxmock.NewRows([]string{"passenger_id", "driver_id", "status", "st_distance"}).
+			AddRow(passengerID, &userID, "REQUESTED", 5000.0))
 
 	req := httptest.NewRequest("PATCH", "/rides/"+rideID.String()+"/complete", nil)
 	req.SetPathValue("id", rideID.String())
@@ -1440,7 +1440,7 @@ func TestCompleteRide_WrongStatus_Returns400(t *testing.T) {
 	})
 	req = req.WithContext(ctx)
 	w := httptest.NewRecorder()
-	CompleteRide(mock)(w, req)
+	CompleteRide(mock, 8.0, 25.0)(w, req)
 
 	resp := w.Result()
 	defer resp.Body.Close()
@@ -1465,10 +1465,10 @@ func TestCompleteRide_NotAssigned_Returns404(t *testing.T) {
 	passengerID := uuid.New()
 	rideID := uuid.New()
 
-	mock.ExpectQuery("SELECT passenger_id, driver_id, status FROM rides WHERE id").
+	mock.ExpectQuery("SELECT passenger_id, driver_id, status, ST_Distance").
 		WithArgs(rideID).
-		WillReturnRows(pgxmock.NewRows([]string{"passenger_id", "driver_id", "status"}).
-			AddRow(passengerID, nil, "IN_PROGRESS"))
+		WillReturnRows(pgxmock.NewRows([]string{"passenger_id", "driver_id", "status", "st_distance"}).
+			AddRow(passengerID, nil, "IN_PROGRESS", 5000.0))
 
 	req := httptest.NewRequest("PATCH", "/rides/"+rideID.String()+"/complete", nil)
 	req.SetPathValue("id", rideID.String())
@@ -1477,7 +1477,7 @@ func TestCompleteRide_NotAssigned_Returns404(t *testing.T) {
 	})
 	req = req.WithContext(ctx)
 	w := httptest.NewRecorder()
-	CompleteRide(mock)(w, req)
+	CompleteRide(mock, 8.0, 25.0)(w, req)
 
 	resp := w.Result()
 	defer resp.Body.Close()
@@ -1502,14 +1502,14 @@ func TestCompleteRide_ChecksCompletedAt(t *testing.T) {
 	passengerID := uuid.New()
 	rideID := uuid.New()
 
-	mock.ExpectQuery("SELECT passenger_id, driver_id, status FROM rides WHERE id").
+	mock.ExpectQuery("SELECT passenger_id, driver_id, status, ST_Distance").
 		WithArgs(rideID).
-		WillReturnRows(pgxmock.NewRows([]string{"passenger_id", "driver_id", "status"}).
-			AddRow(passengerID, &userID, "IN_PROGRESS"))
+		WillReturnRows(pgxmock.NewRows([]string{"passenger_id", "driver_id", "status", "st_distance"}).
+			AddRow(passengerID, &userID, "IN_PROGRESS", 10000.0))
 
-	// The UPDATE must set completed_at = now()
+	// The UPDATE must set completed_at = now() and fare
 	mock.ExpectExec("UPDATE rides SET status = 'COMPLETED', completed_at").
-		WithArgs(rideID).
+		WithArgs(rideID, 80.0).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	req := httptest.NewRequest("PATCH", "/rides/"+rideID.String()+"/complete", nil)
@@ -1519,7 +1519,7 @@ func TestCompleteRide_ChecksCompletedAt(t *testing.T) {
 	})
 	req = req.WithContext(ctx)
 	w := httptest.NewRecorder()
-	CompleteRide(mock)(w, req)
+	CompleteRide(mock, 8.0, 25.0)(w, req)
 
 	resp := w.Result()
 	defer resp.Body.Close()
@@ -1597,13 +1597,13 @@ func TestRideProgress_E2E(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	// --- complete ---
-	mock.ExpectQuery("SELECT passenger_id, driver_id, status FROM rides WHERE id").
+	mock.ExpectQuery("SELECT passenger_id, driver_id, status, ST_Distance").
 		WithArgs(rideID).
-		WillReturnRows(pgxmock.NewRows([]string{"passenger_id", "driver_id", "status"}).
-			AddRow(passengerID, &driverID, "IN_PROGRESS"))
+		WillReturnRows(pgxmock.NewRows([]string{"passenger_id", "driver_id", "status", "st_distance"}).
+			AddRow(passengerID, &driverID, "IN_PROGRESS", 10000.0))
 
 	mock.ExpectExec("UPDATE rides SET status").
-		WithArgs(rideID).
+		WithArgs(rideID, 80.0).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	claims := &auth.Claims{
@@ -1656,9 +1656,439 @@ func TestRideProgress_E2E(t *testing.T) {
 	req5.SetPathValue("id", rideID.String())
 	req5 = req5.WithContext(ctx)
 	w5 := httptest.NewRecorder()
-	CompleteRide(mock)(w5, req5)
+	CompleteRide(mock, 8.0, 25.0)(w5, req5)
 	if w5.Result().StatusCode != http.StatusOK {
 		t.Fatal("complete failed")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// ========================================================
+// CalcFare tests
+// ========================================================
+
+func TestCalcFare_LongTrip_ReturnsDistanceBased(t *testing.T) {
+	fare := CalcFare(10, 8.0, 25.0)
+	if fare != 80.0 {
+		t.Errorf("CalcFare(10, 8, 25) = %v, esperado 80.0", fare)
+	}
+}
+
+func TestCalcFare_ShortTrip_ReturnsMinimum(t *testing.T) {
+	fare := CalcFare(2, 8.0, 25.0)
+	if fare != 25.0 {
+		t.Errorf("CalcFare(2, 8, 25) = %v, esperado 25.0", fare)
+	}
+}
+
+func TestCalcFare_ZeroDistance_ReturnsMinimum(t *testing.T) {
+	fare := CalcFare(0, 8.0, 25.0)
+	if fare != 25.0 {
+		t.Errorf("CalcFare(0, 8, 25) = %v, esperado 25.0", fare)
+	}
+}
+
+func TestCalcFare_Rounding_TwoDecimals(t *testing.T) {
+	fare := CalcFare(3.333, 8.0, 25.0)
+	if fare != 26.66 {
+		t.Errorf("CalcFare(3.333, 8, 25) = %v, esperado 26.66", fare)
+	}
+}
+
+func TestCalcFare_ExactMinimum_ReturnsFare(t *testing.T) {
+	fare := CalcFare(3.125, 8.0, 25.0)
+	if fare != 25.0 {
+		t.Errorf("CalcFare(3.125, 8, 25) = %v, esperado 25.0", fare)
+	}
+}
+
+func TestCalcFare_RoundingEdge_Upward(t *testing.T) {
+	fare := CalcFare(3.1251, 8.0, 25.0)
+	if fare != 25.0 {
+		t.Errorf("CalcFare(3.1251, 8, 25) = %v, esperado 25.0", fare)
+	}
+}
+
+// ========================================================
+// EstimateRide tests
+// ========================================================
+
+func TestEstimateRide_HappyPath_Returns200(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	userID := uuid.New()
+	pickupLon := -99.1333
+	pickupLat := 19.4326
+	dropoffLon := -99.1678
+	dropoffLat := 19.4123
+
+	mock.ExpectQuery("SELECT ST_Distance").
+		WithArgs(pickupLon, pickupLat, dropoffLon, dropoffLat).
+		WillReturnRows(pgxmock.NewRows([]string{"st_distance"}).AddRow(5000.0))
+
+	body := mustMarshal(t, map[string]any{
+		"pickup_lon":  pickupLon,
+		"pickup_lat":  pickupLat,
+		"dropoff_lon": dropoffLon,
+		"dropoff_lat": dropoffLat,
+	})
+	req := httptest.NewRequest("POST", "/rides/estimate", bytes.NewReader(body))
+	ctx := context.WithValue(req.Context(), auth.ClaimsKey, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: userID.String()},
+	})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	EstimateRide(mock, 8.0, 25.0)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var m map[string]any
+	json.NewDecoder(resp.Body).Decode(&m)
+	fare, ok := m["estimated_fare"].(float64)
+	if !ok {
+		t.Fatal("estimated_fare no es float64")
+	}
+	if fare != 40.0 {
+		t.Errorf("estimated_fare=%v, esperado 40.0", fare)
+	}
+	if m["rate_per_km"] != 8.0 {
+		t.Errorf("rate_per_km=%v, esperado 8.0", m["rate_per_km"])
+	}
+	if m["minimum_fare"] != 25.0 {
+		t.Errorf("minimum_fare=%v, esperado 25.0", m["minimum_fare"])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestEstimateRide_MinimumFare_ReturnsMinimum(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	userID := uuid.New()
+
+	mock.ExpectQuery("SELECT ST_Distance").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"st_distance"}).AddRow(500.0))
+
+	body := mustMarshal(t, map[string]any{
+		"pickup_lon":  -99.1333,
+		"pickup_lat":  19.4326,
+		"dropoff_lon": -99.1678,
+		"dropoff_lat": 19.4123,
+	})
+	req := httptest.NewRequest("POST", "/rides/estimate", bytes.NewReader(body))
+	ctx := context.WithValue(req.Context(), auth.ClaimsKey, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: userID.String()},
+	})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	EstimateRide(mock, 8.0, 25.0)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var m map[string]any
+	json.NewDecoder(resp.Body).Decode(&m)
+	fare, ok := m["estimated_fare"].(float64)
+	if !ok {
+		t.Fatal("estimated_fare no es float64")
+	}
+	if fare != 25.0 {
+		t.Errorf("estimated_fare=%v, esperado 25.0", fare)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestEstimateRide_MissingFields_Returns400(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	userID := uuid.New()
+
+	body := mustMarshal(t, map[string]any{
+		"pickup_lat":  19.4326,
+		"dropoff_lon": -99.1678,
+		"dropoff_lat": 19.4123,
+	})
+	req := httptest.NewRequest("POST", "/rides/estimate", bytes.NewReader(body))
+	ctx := context.WithValue(req.Context(), auth.ClaimsKey, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: userID.String()},
+	})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	EstimateRide(mock, 8.0, 25.0)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestEstimateRide_InvalidLon_Returns400(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	userID := uuid.New()
+
+	body := mustMarshal(t, map[string]any{
+		"pickup_lon":  200.0,
+		"pickup_lat":  19.4326,
+		"dropoff_lon": -99.1678,
+		"dropoff_lat": 19.4123,
+	})
+	req := httptest.NewRequest("POST", "/rides/estimate", bytes.NewReader(body))
+	ctx := context.WithValue(req.Context(), auth.ClaimsKey, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: userID.String()},
+	})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	EstimateRide(mock, 8.0, 25.0)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestEstimateRide_NoAuth_Returns401(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	body := mustMarshal(t, map[string]any{
+		"pickup_lon":  -99.1333,
+		"pickup_lat":  19.4326,
+		"dropoff_lon": -99.1678,
+		"dropoff_lat": 19.4123,
+	})
+	req := httptest.NewRequest("POST", "/rides/estimate", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	EstimateRide(mock, 8.0, 25.0)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+// ========================================================
+// CompleteRide fare tests
+// ========================================================
+
+func TestCompleteRide_WithFare_HappyDistance_Returns200(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	userID := uuid.New()
+	passengerID := uuid.New()
+	rideID := uuid.New()
+
+	mock.ExpectQuery("SELECT passenger_id, driver_id, status, ST_Distance").
+		WithArgs(rideID).
+		WillReturnRows(pgxmock.NewRows([]string{"passenger_id", "driver_id", "status", "st_distance"}).
+			AddRow(passengerID, &userID, "IN_PROGRESS", 10000.0))
+
+	mock.ExpectExec("UPDATE rides SET status").
+		WithArgs(rideID, 80.0).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	req := httptest.NewRequest("PATCH", "/rides/"+rideID.String()+"/complete", nil)
+	req.SetPathValue("id", rideID.String())
+	ctx := context.WithValue(req.Context(), auth.ClaimsKey, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: userID.String()},
+	})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	CompleteRide(mock, 8.0, 25.0)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var m map[string]any
+	json.NewDecoder(resp.Body).Decode(&m)
+	if m["id"] != rideID.String() {
+		t.Errorf("id=%q, esperado %q", m["id"], rideID.String())
+	}
+	if m["status"] != "COMPLETED" {
+		t.Errorf("status=%q, esperado COMPLETED", m["status"])
+	}
+	fare, ok := m["fare"].(float64)
+	if !ok {
+		t.Fatal("fare no es float64")
+	}
+	if fare != 80.0 {
+		t.Errorf("fare=%v, esperado 80.0", fare)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestCompleteRide_WithFare_Minimum_ReturnsMinimum(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	userID := uuid.New()
+	passengerID := uuid.New()
+	rideID := uuid.New()
+
+	mock.ExpectQuery("SELECT passenger_id, driver_id, status, ST_Distance").
+		WithArgs(rideID).
+		WillReturnRows(pgxmock.NewRows([]string{"passenger_id", "driver_id", "status", "st_distance"}).
+			AddRow(passengerID, &userID, "IN_PROGRESS", 500.0))
+
+	mock.ExpectExec("UPDATE rides SET status").
+		WithArgs(rideID, 25.0).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	req := httptest.NewRequest("PATCH", "/rides/"+rideID.String()+"/complete", nil)
+	req.SetPathValue("id", rideID.String())
+	ctx := context.WithValue(req.Context(), auth.ClaimsKey, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: userID.String()},
+	})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	CompleteRide(mock, 8.0, 25.0)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var m map[string]any
+	json.NewDecoder(resp.Body).Decode(&m)
+	fare, ok := m["fare"].(float64)
+	if !ok {
+		t.Fatal("fare no es float64")
+	}
+	if fare != 25.0 {
+		t.Errorf("fare=%v, esperado 25.0", fare)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestCompleteRide_WithFare_WrongStatus_Returns400(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	userID := uuid.New()
+	passengerID := uuid.New()
+	rideID := uuid.New()
+
+	mock.ExpectQuery("SELECT passenger_id, driver_id, status, ST_Distance").
+		WithArgs(rideID).
+		WillReturnRows(pgxmock.NewRows([]string{"passenger_id", "driver_id", "status", "st_distance"}).
+			AddRow(passengerID, &userID, "REQUESTED", 5000.0))
+
+	req := httptest.NewRequest("PATCH", "/rides/"+rideID.String()+"/complete", nil)
+	req.SetPathValue("id", rideID.String())
+	ctx := context.WithValue(req.Context(), auth.ClaimsKey, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: userID.String()},
+	})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	CompleteRide(mock, 8.0, 25.0)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusBadRequest)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestCompleteRide_WithFare_NotAssigned_Returns404(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	userID := uuid.New()
+	passengerID := uuid.New()
+	rideID := uuid.New()
+
+	mock.ExpectQuery("SELECT passenger_id, driver_id, status, ST_Distance").
+		WithArgs(rideID).
+		WillReturnRows(pgxmock.NewRows([]string{"passenger_id", "driver_id", "status", "st_distance"}).
+			AddRow(passengerID, nil, "IN_PROGRESS", 5000.0))
+
+	req := httptest.NewRequest("PATCH", "/rides/"+rideID.String()+"/complete", nil)
+	req.SetPathValue("id", rideID.String())
+	ctx := context.WithValue(req.Context(), auth.ClaimsKey, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: userID.String()},
+	})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	CompleteRide(mock, 8.0, 25.0)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusNotFound)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {

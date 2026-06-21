@@ -61,7 +61,8 @@ func main() {
 	mux.Handle("PATCH /rides/{id}/en-route", auth.Auth(jwtSecret)(auth.RequireRole("driver")(http.HandlerFunc(api.EnRouteRide(pool)))))
 	mux.Handle("PATCH /rides/{id}/arrived", auth.Auth(jwtSecret)(auth.RequireRole("driver")(http.HandlerFunc(api.ArrivedRide(pool)))))
 	mux.Handle("PATCH /rides/{id}/start", auth.Auth(jwtSecret)(auth.RequireRole("driver")(http.HandlerFunc(api.StartRide(pool)))))
-	mux.Handle("PATCH /rides/{id}/complete", auth.Auth(jwtSecret)(auth.RequireRole("driver")(http.HandlerFunc(api.CompleteRide(pool)))))
+	mux.Handle("PATCH /rides/{id}/complete", auth.Auth(jwtSecret)(auth.RequireRole("driver")(http.HandlerFunc(api.CompleteRide(pool, cfg.FareRatePerKm, cfg.FareMinimum)))))
+	mux.Handle("POST /rides/estimate", auth.Auth(jwtSecret)(http.HandlerFunc(api.EstimateRide(pool, cfg.FareRatePerKm, cfg.FareMinimum))))
 	mux.Handle("PATCH /drivers/location", auth.Auth(jwtSecret)(auth.RequireRole("driver")(http.HandlerFunc(api.UpdateLocation(pool)))))
 	mux.Handle("GET /drivers/nearby", auth.Auth(jwtSecret)(auth.RequireRole("rider")(http.HandlerFunc(api.NearbyDrivers(pool)))))
 

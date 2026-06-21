@@ -128,6 +128,80 @@ func rideToJSON(r rideRow) map[string]any {
 	return m
 }
 
+// --- CalcFare ---
+
+// CalcFare calcula MAX(distance_km * ratePerKm, minimum), redondeado a 2 decimales.
+func CalcFare(distanceKm, ratePerKm, minimum float64) float64 {
+	fare := math.Round(distanceKm*ratePerKm*100) / 100
+	if fare < minimum {
+		return minimum
+	}
+	return fare
+}
+
+// --- EstimateRide ---
+
+// EstimateRide estima la tarifa de un viaje según coordenadas de origen y destino.
+//
+// Request:  POST /rides/estimate  {pickup_lon, pickup_lat, dropoff_lon, dropoff_lat}
+// Response: 200 {estimated_fare, distance_km, rate_per_km, minimum_fare}
+// Errors:   400 si faltan campos o coordenadas inválidas, 401 sin auth
+func EstimateRide(pool Pool, ratePerKm, minimum float64) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := r.Context().Value(auth.ClaimsKey).(*auth.Claims)
+		if !ok || claims == nil {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+
+		var body struct {
+			PickupLon  *float64 `json:"pickup_lon"`
+			PickupLat  *float64 `json:"pickup_lat"`
+			DropoffLon *float64 `json:"dropoff_lon"`
+			DropoffLat *float64 `json:"dropoff_lat"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+
+		if body.PickupLon == nil || body.PickupLat == nil ||
+			body.DropoffLon == nil || body.DropoffLat == nil {
+			writeError(w, http.StatusBadRequest, "all fields are required")
+			return
+		}
+
+		if *body.PickupLon < -180 || *body.PickupLon > 180 ||
+			*body.DropoffLon < -180 || *body.DropoffLon > 180 ||
+			*body.PickupLat < -90 || *body.PickupLat > 90 ||
+			*body.DropoffLat < -90 || *body.DropoffLat > 90 {
+			writeError(w, http.StatusBadRequest, "invalid coordinates")
+			return
+		}
+
+		var distanceMeters float64
+		err := pool.QueryRow(r.Context(),
+			`SELECT ST_Distance(ST_SetSRID(ST_MakePoint($1,$2),4326)::geography, ST_SetSRID(ST_MakePoint($3,$4),4326)::geography)`,
+			*body.PickupLon, *body.PickupLat, *body.DropoffLon, *body.DropoffLat,
+		).Scan(&distanceMeters)
+		if err != nil {
+			slog.Error("estimate ride: distance query", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		distanceKm := distanceMeters / 1000
+		fare := CalcFare(distanceKm, ratePerKm, minimum)
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"estimated_fare": fare,
+			"distance_km":    math.Round(distanceKm*100) / 100,
+			"rate_per_km":    ratePerKm,
+			"minimum_fare":   minimum,
+		})
+	}
+}
+
 // --- CreateRide ---
 
 // CreateRide crea un nuevo viaje como rider.
@@ -787,15 +861,15 @@ func StartRide(pool Pool) http.HandlerFunc {
 
 // --- CompleteRide ---
 
-// CompleteRide finaliza el viaje.
-// Transición: IN_PROGRESS → COMPLETED. También asigna completed_at.
+// CompleteRide finaliza el viaje y calcula la tarifa.
+// Transición: IN_PROGRESS → COMPLETED. Asigna completed_at y fare.
 //
 // Request:  PATCH /rides/{id}/complete  (sin body)
-// Response: 200 {id, status: "COMPLETED", completed_at}
+// Response: 200 {id, status: "COMPLETED", completed_at, fare}
 // Errors:   400 si la transición no es válida, 401 sin auth,
 //           404 si no existe o el conductor no es el asignado,
 //           409 si otro request ya cambió el estado
-func CompleteRide(pool Pool) http.HandlerFunc {
+func CompleteRide(pool Pool, ratePerKm, minimum float64) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := r.Context().Value(auth.ClaimsKey).(*auth.Claims)
 		if !ok || claims == nil {
@@ -817,10 +891,13 @@ func CompleteRide(pool Pool) http.HandlerFunc {
 
 		var driverID *uuid.UUID
 		var currentStatus string
+		var distanceMeters float64
 		err = pool.QueryRow(r.Context(),
-			`SELECT passenger_id, driver_id, status FROM rides WHERE id = $1`,
+			`SELECT passenger_id, driver_id, status,
+			        ST_Distance(pickup_location::geography, dropoff_location::geography)
+			 FROM rides WHERE id = $1`,
 			rideID,
-		).Scan(new(uuid.UUID), &driverID, &currentStatus)
+		).Scan(new(uuid.UUID), &driverID, &currentStatus, &distanceMeters)
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "ride not found")
 			return
@@ -841,10 +918,12 @@ func CompleteRide(pool Pool) http.HandlerFunc {
 			return
 		}
 
+		fare := CalcFare(distanceMeters/1000, ratePerKm, minimum)
+
 		tag, err := pool.Exec(r.Context(),
-			`UPDATE rides SET status = 'COMPLETED', completed_at = now(), updated_at = now()
+			`UPDATE rides SET status = 'COMPLETED', completed_at = now(), updated_at = now(), fare = $2
 			 WHERE id = $1 AND status = 'IN_PROGRESS'`,
-			rideID,
+			rideID, fare,
 		)
 		if err != nil {
 			slog.Error("complete ride: update", "error", err)
@@ -860,6 +939,7 @@ func CompleteRide(pool Pool) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"id":     rideID.String(),
 			"status": "COMPLETED",
+			"fare":   fare,
 		})
 	}
 }
