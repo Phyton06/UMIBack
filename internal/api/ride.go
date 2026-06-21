@@ -574,13 +574,13 @@ func EnRouteRide(pool Pool) http.HandlerFunc {
 		}
 
 		// SELECT current ride for access control + state validation
-		var passengerID uuid.UUID
+		// ponytail: passenger_id not needed here (driver-only access)
 		var driverID *uuid.UUID
 		var currentStatus string
 		err = pool.QueryRow(r.Context(),
 			`SELECT passenger_id, driver_id, status FROM rides WHERE id = $1`,
 			rideID,
-		).Scan(&passengerID, &driverID, &currentStatus)
+		).Scan(new(uuid.UUID), &driverID, &currentStatus)
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "ride not found")
 			return
@@ -657,13 +657,12 @@ func ArrivedRide(pool Pool) http.HandlerFunc {
 			return
 		}
 
-		var passengerID uuid.UUID
 		var driverID *uuid.UUID
 		var currentStatus string
 		err = pool.QueryRow(r.Context(),
 			`SELECT passenger_id, driver_id, status FROM rides WHERE id = $1`,
 			rideID,
-		).Scan(&passengerID, &driverID, &currentStatus)
+		).Scan(new(uuid.UUID), &driverID, &currentStatus)
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "ride not found")
 			return
@@ -737,13 +736,12 @@ func StartRide(pool Pool) http.HandlerFunc {
 			return
 		}
 
-		var passengerID uuid.UUID
 		var driverID *uuid.UUID
 		var currentStatus string
 		err = pool.QueryRow(r.Context(),
 			`SELECT passenger_id, driver_id, status FROM rides WHERE id = $1`,
 			rideID,
-		).Scan(&passengerID, &driverID, &currentStatus)
+		).Scan(new(uuid.UUID), &driverID, &currentStatus)
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "ride not found")
 			return
@@ -817,13 +815,12 @@ func CompleteRide(pool Pool) http.HandlerFunc {
 			return
 		}
 
-		var passengerID uuid.UUID
 		var driverID *uuid.UUID
 		var currentStatus string
 		err = pool.QueryRow(r.Context(),
 			`SELECT passenger_id, driver_id, status FROM rides WHERE id = $1`,
 			rideID,
-		).Scan(&passengerID, &driverID, &currentStatus)
+		).Scan(new(uuid.UUID), &driverID, &currentStatus)
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "ride not found")
 			return
