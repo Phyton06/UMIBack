@@ -428,3 +428,117 @@ func CancelRide(pool Pool) http.HandlerFunc {
 		})
 	}
 }
+
+// --- AcceptRide ---
+
+// AcceptRide asigna un conductor a un viaje solicitado.
+// El conductor debe estar disponible y no puede aceptar su propio viaje.
+// Usa UPDATE condicional para safety ante condiciones de carrera.
+//
+// Request:  PATCH /rides/{id}/accept  (sin body)
+// Response: 200 {id, status: "ACCEPTED", driver_id}
+// Errors:   400 si el conductor no está disponible o transición inválida,
+//           401 sin auth, 403 si el rol no es driver o es su propio viaje,
+//           404 si no se encuentra el ride, 409 si otro conductor ya aceptó
+func AcceptRide(pool Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := r.Context().Value(auth.ClaimsKey).(*auth.Claims)
+		if !ok || claims == nil {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+
+		userID, err := uuid.Parse(claims.Subject)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "invalid token claims")
+			return
+		}
+
+		rideID, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid ride id")
+			return
+		}
+
+		// Check driver availability
+		var available bool
+		err = pool.QueryRow(r.Context(),
+			`SELECT available FROM drivers WHERE id = $1`, userID,
+		).Scan(&available)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "driver not found")
+			return
+		}
+		if err != nil {
+			slog.Error("accept ride: select driver", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		if !available {
+			writeError(w, http.StatusBadRequest, "driver not available")
+			return
+		}
+
+		// SELECT current ride for access control + state validation
+		var passengerID uuid.UUID
+		var driverID *uuid.UUID
+		var currentStatus string
+		err = pool.QueryRow(r.Context(),
+			`SELECT passenger_id, driver_id, status FROM rides WHERE id = $1`,
+			rideID,
+		).Scan(&passengerID, &driverID, &currentStatus)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "ride not found")
+			return
+		}
+		if err != nil {
+			slog.Error("accept ride: select ride", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		// Can't accept own ride
+		if passengerID == userID {
+			writeError(w, http.StatusForbidden, "cannot accept your own ride")
+			return
+		}
+
+		// Validate state transition
+		if err := engine.CanTransition(model.RideStatus(currentStatus), model.StatusAccepted); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		// Conditional UPDATE for race safety: if status changed or driver
+		// already assigned between SELECT and UPDATE, zero rows match → 409.
+		tag, err := pool.Exec(r.Context(),
+			`UPDATE rides SET status = 'ACCEPTED', driver_id = $1, updated_at = now()
+			 WHERE id = $2 AND driver_id IS NULL AND status = 'REQUESTED'`,
+			userID, rideID,
+		)
+		if err != nil {
+			slog.Error("accept ride: update", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		if tag.RowsAffected() == 0 {
+			writeError(w, http.StatusConflict, "ride was already accepted")
+			return
+		}
+
+		// ponytail: non-critical — ride is already assigned, log and continue on error
+		_, err = pool.Exec(r.Context(),
+			`UPDATE drivers SET available = false WHERE id = $1`, userID,
+		)
+		if err != nil {
+			slog.Error("accept ride: update driver availability", "error", err)
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":        rideID.String(),
+			"status":    "ACCEPTED",
+			"driver_id": userID.String(),
+		})
+	}
+}
