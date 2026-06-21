@@ -62,6 +62,8 @@ func main() {
 	mux.Handle("PATCH /rides/{id}/arrived", auth.Auth(jwtSecret)(auth.RequireRole("driver")(http.HandlerFunc(api.ArrivedRide(pool)))))
 	mux.Handle("PATCH /rides/{id}/start", auth.Auth(jwtSecret)(auth.RequireRole("driver")(http.HandlerFunc(api.StartRide(pool)))))
 	mux.Handle("PATCH /rides/{id}/complete", auth.Auth(jwtSecret)(auth.RequireRole("driver")(http.HandlerFunc(api.CompleteRide(pool)))))
+	mux.Handle("PATCH /drivers/location", auth.Auth(jwtSecret)(auth.RequireRole("driver")(http.HandlerFunc(api.UpdateLocation(pool)))))
+	mux.Handle("GET /drivers/nearby", auth.Auth(jwtSecret)(auth.RequireRole("rider")(http.HandlerFunc(api.NearbyDrivers(pool)))))
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.HTTPPort,
