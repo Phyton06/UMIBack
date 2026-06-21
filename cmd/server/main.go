@@ -71,6 +71,9 @@ func main() {
 	mux.Handle("PATCH /drivers/availability", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("driver")(http.HandlerFunc(api.ToggleAvailability(pool))))))
 	mux.Handle("GET /drivers/rides", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("driver")(http.HandlerFunc(api.DriverRides(pool))))))
 	mux.Handle("GET /drivers/nearby", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("rider")(http.HandlerFunc(api.NearbyDrivers(pool))))))
+	// ponytail: generalTier for rider endpoints matches the existing pattern
+	mux.Handle("GET /rider/stats", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("rider")(http.HandlerFunc(api.RiderStats(pool))))))
+	mux.Handle("GET /rider/rides", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("rider")(http.HandlerFunc(api.RiderRides(pool))))))
 
 	// Sweep stale rate-limit entries every 5 minutes
 	api.StartRateLimitSweeper(context.Background(), 5*time.Minute)
