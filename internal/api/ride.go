@@ -542,3 +542,324 @@ func AcceptRide(pool Pool) http.HandlerFunc {
 		})
 	}
 }
+
+// --- EnRouteRide ---
+
+// EnRouteRide marca que el conductor va en camino al punto de recogida.
+// Transición: ACCEPTED → EN_ROUTE.
+//
+// Request:  PATCH /rides/{id}/en-route  (sin body)
+// Response: 200 {id, status: "EN_ROUTE"}
+// Errors:   400 si la transición no es válida, 401 sin auth,
+//           404 si no existe o el conductor no es el asignado,
+//           409 si otro request ya cambió el estado
+func EnRouteRide(pool Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := r.Context().Value(auth.ClaimsKey).(*auth.Claims)
+		if !ok || claims == nil {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+
+		userID, err := uuid.Parse(claims.Subject)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "invalid token claims")
+			return
+		}
+
+		rideID, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid ride id")
+			return
+		}
+
+		// SELECT current ride for access control + state validation
+		// ponytail: passenger_id not needed here (driver-only access)
+		var driverID *uuid.UUID
+		var currentStatus string
+		err = pool.QueryRow(r.Context(),
+			`SELECT passenger_id, driver_id, status FROM rides WHERE id = $1`,
+			rideID,
+		).Scan(new(uuid.UUID), &driverID, &currentStatus)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "ride not found")
+			return
+		}
+		if err != nil {
+			slog.Error("en-route ride: select", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		// Access control: only the assigned driver may advance the ride
+		if driverID == nil || *driverID != userID {
+			writeError(w, http.StatusNotFound, "ride not found")
+			return
+		}
+
+		// Validate state transition
+		if err := engine.CanTransition(model.RideStatus(currentStatus), model.StatusEnRoute); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		// Conditional UPDATE for race safety
+		tag, err := pool.Exec(r.Context(),
+			`UPDATE rides SET status = 'EN_ROUTE', updated_at = now()
+			 WHERE id = $1 AND status = 'ACCEPTED'`,
+			rideID,
+		)
+		if err != nil {
+			slog.Error("en-route ride: update", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		if tag.RowsAffected() == 0 {
+			writeError(w, http.StatusConflict, "ride status changed")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":     rideID.String(),
+			"status": "EN_ROUTE",
+		})
+	}
+}
+
+// --- ArrivedRide ---
+
+// ArrivedRide marca que el conductor llegó al punto de recogida.
+// Transición: EN_ROUTE → ARRIVED.
+//
+// Request:  PATCH /rides/{id}/arrived  (sin body)
+// Response: 200 {id, status: "ARRIVED"}
+// Errors:   400 si la transición no es válida, 401 sin auth,
+//           404 si no existe o el conductor no es el asignado,
+//           409 si otro request ya cambió el estado
+func ArrivedRide(pool Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := r.Context().Value(auth.ClaimsKey).(*auth.Claims)
+		if !ok || claims == nil {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+
+		userID, err := uuid.Parse(claims.Subject)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "invalid token claims")
+			return
+		}
+
+		rideID, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid ride id")
+			return
+		}
+
+		var driverID *uuid.UUID
+		var currentStatus string
+		err = pool.QueryRow(r.Context(),
+			`SELECT passenger_id, driver_id, status FROM rides WHERE id = $1`,
+			rideID,
+		).Scan(new(uuid.UUID), &driverID, &currentStatus)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "ride not found")
+			return
+		}
+		if err != nil {
+			slog.Error("arrived ride: select", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		if driverID == nil || *driverID != userID {
+			writeError(w, http.StatusNotFound, "ride not found")
+			return
+		}
+
+		if err := engine.CanTransition(model.RideStatus(currentStatus), model.StatusArrived); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		tag, err := pool.Exec(r.Context(),
+			`UPDATE rides SET status = 'ARRIVED', updated_at = now()
+			 WHERE id = $1 AND status = 'EN_ROUTE'`,
+			rideID,
+		)
+		if err != nil {
+			slog.Error("arrived ride: update", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		if tag.RowsAffected() == 0 {
+			writeError(w, http.StatusConflict, "ride status changed")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":     rideID.String(),
+			"status": "ARRIVED",
+		})
+	}
+}
+
+// --- StartRide ---
+
+// StartRide inicia el viaje (conductor y pasajero a bordo).
+// Transición: ARRIVED → IN_PROGRESS.
+//
+// Request:  PATCH /rides/{id}/start  (sin body)
+// Response: 200 {id, status: "IN_PROGRESS"}
+// Errors:   400 si la transición no es válida, 401 sin auth,
+//           404 si no existe o el conductor no es el asignado,
+//           409 si otro request ya cambió el estado
+func StartRide(pool Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := r.Context().Value(auth.ClaimsKey).(*auth.Claims)
+		if !ok || claims == nil {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+
+		userID, err := uuid.Parse(claims.Subject)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "invalid token claims")
+			return
+		}
+
+		rideID, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid ride id")
+			return
+		}
+
+		var driverID *uuid.UUID
+		var currentStatus string
+		err = pool.QueryRow(r.Context(),
+			`SELECT passenger_id, driver_id, status FROM rides WHERE id = $1`,
+			rideID,
+		).Scan(new(uuid.UUID), &driverID, &currentStatus)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "ride not found")
+			return
+		}
+		if err != nil {
+			slog.Error("start ride: select", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		if driverID == nil || *driverID != userID {
+			writeError(w, http.StatusNotFound, "ride not found")
+			return
+		}
+
+		if err := engine.CanTransition(model.RideStatus(currentStatus), model.StatusInProgress); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		tag, err := pool.Exec(r.Context(),
+			`UPDATE rides SET status = 'IN_PROGRESS', updated_at = now()
+			 WHERE id = $1 AND status = 'ARRIVED'`,
+			rideID,
+		)
+		if err != nil {
+			slog.Error("start ride: update", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		if tag.RowsAffected() == 0 {
+			writeError(w, http.StatusConflict, "ride status changed")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":     rideID.String(),
+			"status": "IN_PROGRESS",
+		})
+	}
+}
+
+// --- CompleteRide ---
+
+// CompleteRide finaliza el viaje.
+// Transición: IN_PROGRESS → COMPLETED. También asigna completed_at.
+//
+// Request:  PATCH /rides/{id}/complete  (sin body)
+// Response: 200 {id, status: "COMPLETED", completed_at}
+// Errors:   400 si la transición no es válida, 401 sin auth,
+//           404 si no existe o el conductor no es el asignado,
+//           409 si otro request ya cambió el estado
+func CompleteRide(pool Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := r.Context().Value(auth.ClaimsKey).(*auth.Claims)
+		if !ok || claims == nil {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+
+		userID, err := uuid.Parse(claims.Subject)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "invalid token claims")
+			return
+		}
+
+		rideID, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid ride id")
+			return
+		}
+
+		var driverID *uuid.UUID
+		var currentStatus string
+		err = pool.QueryRow(r.Context(),
+			`SELECT passenger_id, driver_id, status FROM rides WHERE id = $1`,
+			rideID,
+		).Scan(new(uuid.UUID), &driverID, &currentStatus)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "ride not found")
+			return
+		}
+		if err != nil {
+			slog.Error("complete ride: select", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		if driverID == nil || *driverID != userID {
+			writeError(w, http.StatusNotFound, "ride not found")
+			return
+		}
+
+		if err := engine.CanTransition(model.RideStatus(currentStatus), model.StatusCompleted); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+
+		tag, err := pool.Exec(r.Context(),
+			`UPDATE rides SET status = 'COMPLETED', completed_at = now(), updated_at = now()
+			 WHERE id = $1 AND status = 'IN_PROGRESS'`,
+			rideID,
+		)
+		if err != nil {
+			slog.Error("complete ride: update", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		if tag.RowsAffected() == 0 {
+			writeError(w, http.StatusConflict, "ride status changed")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":     rideID.String(),
+			"status": "COMPLETED",
+		})
+	}
+}
