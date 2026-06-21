@@ -5,14 +5,17 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 )
 
 // Config almacena la configuración de la aplicación.
 type Config struct {
-	HTTPPort    string
-	DatabaseURL string
-	LogLevel    string
-	JWTSecret   string
+	HTTPPort      string
+	DatabaseURL   string
+	LogLevel      string
+	JWTSecret     string
+	FareRatePerKm float64
+	FareMinimum   float64
 }
 
 // NewConfig lee las variables de entorno y retorna una Config validada.
@@ -49,11 +52,27 @@ func NewConfig() (Config, error) {
 	}
 
 	return Config{
-		HTTPPort:    port,
-		DatabaseURL: dbURL,
-		LogLevel:    logLevel,
-		JWTSecret:   jwtSecret,
+		HTTPPort:      port,
+		DatabaseURL:   dbURL,
+		LogLevel:      logLevel,
+		JWTSecret:     jwtSecret,
+		FareRatePerKm: parseFloatEnv("FARE_RATE_PER_KM", 8.0),
+		FareMinimum:   parseFloatEnv("FARE_MINIMUM", 25.0),
 	}, nil
 }
 
 // ponytail: only JWT_SECRET is used from the new fields; OTP/expiry/SMS are hardcoded in handlers
+
+// parseFloatEnv parsea un float64 desde una variable de entorno.
+// Si la variable está vacía, retorna el valor por omisión.
+func parseFloatEnv(key string, defaultVal float64) float64 {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	f, err := strconv.ParseFloat(val, 64)
+	if err != nil {
+		return defaultVal
+	}
+	return f
+}
