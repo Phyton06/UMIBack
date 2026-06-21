@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Phyton06/UMIBack/internal/api"
+	"github.com/Phyton06/UMIBack/internal/auth"
 	"github.com/Phyton06/UMIBack/internal/config"
 	"github.com/Phyton06/UMIBack/internal/db"
 )
@@ -41,8 +42,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	jwtSecret := []byte(cfg.JWTSecret)
+	sender := auth.MockSender{}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", api.Handler(pool))
+	mux.HandleFunc("POST /auth/register/rider", api.RegisterRider(pool, jwtSecret))
+	mux.HandleFunc("POST /auth/register/driver", api.RegisterDriver(pool, jwtSecret))
+	mux.HandleFunc("POST /auth/request-otp", api.RequestOTP(pool, sender))
+	mux.HandleFunc("POST /auth/verify-otp", api.VerifyOTP(pool, jwtSecret))
+	mux.HandleFunc("POST /auth/refresh", api.RefreshToken(pool, jwtSecret))
+	mux.Handle("POST /auth/logout", auth.Auth(jwtSecret)(api.Logout(pool)))
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.HTTPPort,

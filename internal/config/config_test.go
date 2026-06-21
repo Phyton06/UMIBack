@@ -9,9 +9,11 @@ func TestNewConfig_UsaVariablesDeEntorno(t *testing.T) {
 	os.Setenv("DB_URL", "postgres://localhost:5432/test")
 	os.Setenv("PORT", "9000")
 	os.Setenv("LOG_LEVEL", "debug")
+	os.Setenv("JWT_SECRET", "test-secret")
 	defer os.Unsetenv("DB_URL")
 	defer os.Unsetenv("PORT")
 	defer os.Unsetenv("LOG_LEVEL")
+	defer os.Unsetenv("JWT_SECRET")
 
 	cfg, err := NewConfig()
 	if err != nil {
@@ -31,7 +33,9 @@ func TestNewConfig_UsaVariablesDeEntorno(t *testing.T) {
 
 func TestNewConfig_ValoresPorOmision(t *testing.T) {
 	os.Setenv("DB_URL", "postgres://localhost:5432/test")
+	os.Setenv("JWT_SECRET", "test-secret")
 	defer os.Unsetenv("DB_URL")
+	defer os.Unsetenv("JWT_SECRET")
 	os.Unsetenv("PORT")
 	os.Unsetenv("LOG_LEVEL")
 
