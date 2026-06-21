@@ -936,6 +936,14 @@ func CompleteRide(pool Pool, ratePerKm, minimum float64) http.HandlerFunc {
 			return
 		}
 
+		// ponytail: non-critical — ride is already completed, log and continue on error
+		_, err = pool.Exec(r.Context(),
+			`UPDATE drivers SET available = true WHERE id = $1`, userID,
+		)
+		if err != nil {
+			slog.Error("complete ride: update driver availability", "error", err)
+		}
+
 		writeJSON(w, http.StatusOK, map[string]any{
 			"id":     rideID.String(),
 			"status": "COMPLETED",
