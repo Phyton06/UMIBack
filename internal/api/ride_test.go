@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -2128,6 +2129,101 @@ func TestAcceptRide_RideNotFound_Returns404(t *testing.T) {
 
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusNotFound)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// ========================================================
+// CompleteRide availability restoration test
+// ========================================================
+
+func TestCompleteRide_RestoresAvailable_Returns200(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	userID := uuid.New()
+	passengerID := uuid.New()
+	rideID := uuid.New()
+
+	mock.ExpectQuery("SELECT passenger_id, driver_id, status, ST_Distance").
+		WithArgs(rideID).
+		WillReturnRows(pgxmock.NewRows([]string{"passenger_id", "driver_id", "status", "st_distance"}).
+			AddRow(passengerID, &userID, "IN_PROGRESS", 10000.0))
+
+	mock.ExpectExec("UPDATE rides SET status").
+		WithArgs(rideID, 80.0).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	mock.ExpectExec("UPDATE drivers SET available").
+		WithArgs(userID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	req := httptest.NewRequest("PATCH", "/rides/"+rideID.String()+"/complete", nil)
+	req.SetPathValue("id", rideID.String())
+	ctx := context.WithValue(req.Context(), auth.ClaimsKey, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: userID.String()},
+	})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	CompleteRide(mock, 8.0, 25.0)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusOK)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestCompleteRide_AvailabilityUpdateFails_StillReturns200(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	userID := uuid.New()
+	passengerID := uuid.New()
+	rideID := uuid.New()
+
+	mock.ExpectQuery("SELECT passenger_id, driver_id, status, ST_Distance").
+		WithArgs(rideID).
+		WillReturnRows(pgxmock.NewRows([]string{"passenger_id", "driver_id", "status", "st_distance"}).
+			AddRow(passengerID, &userID, "IN_PROGRESS", 10000.0))
+
+	mock.ExpectExec("UPDATE rides SET status").
+		WithArgs(rideID, 80.0).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	// Availability update fails — should still return 200
+	mock.ExpectExec("UPDATE drivers SET available").
+		WithArgs(userID).
+		WillReturnError(fmt.Errorf("connection lost"))
+
+	req := httptest.NewRequest("PATCH", "/rides/"+rideID.String()+"/complete", nil)
+	req.SetPathValue("id", rideID.String())
+	ctx := context.WithValue(req.Context(), auth.ClaimsKey, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: userID.String()},
+	})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	CompleteRide(mock, 8.0, 25.0)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusOK)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {

@@ -184,3 +184,99 @@ func NearbyDrivers(pool Pool) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, map[string]any{"drivers": drivers})
 	}
 }
+
+// ToggleAvailability permite al conductor cambiar su disponibilidad.
+//
+// Request:  PATCH /drivers/availability  {"available": bool}
+// Response: 200 {"available": true|false}
+// Errors:   400 invalid/missing field, 401, 403
+func ToggleAvailability(pool Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := r.Context().Value(auth.ClaimsKey).(*auth.Claims)
+		if !ok || claims == nil {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+
+		driverID, err := uuid.Parse(claims.Subject)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "invalid token claims")
+			return
+		}
+
+		var body struct {
+			Available *bool `json:"available"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if body.Available == nil {
+			writeError(w, http.StatusBadRequest, "available is required")
+			return
+		}
+
+		_, err = pool.Exec(r.Context(),
+			`UPDATE drivers SET available = $1, updated_at = now() WHERE id = $2`,
+			*body.Available, driverID,
+		)
+		if err != nil {
+			slog.Error("toggle availability: exec", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]bool{"available": *body.Available})
+	}
+}
+
+// DriverRides retorna los viajes completados del conductor autenticado.
+//
+// Request:  GET /drivers/rides
+// Response: 200 {"rides": [...]}
+// Errors:   401, 403
+func DriverRides(pool Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := r.Context().Value(auth.ClaimsKey).(*auth.Claims)
+		if !ok || claims == nil {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+
+		driverID, err := uuid.Parse(claims.Subject)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "invalid token claims")
+			return
+		}
+
+		rows, err := pool.Query(r.Context(),
+			`SELECT `+rideCols+` FROM rides WHERE driver_id = $1 AND status = 'COMPLETED' ORDER BY completed_at DESC`,
+			driverID,
+		)
+		if err != nil {
+			slog.Error("driver rides: query", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		defer rows.Close()
+
+		rides := make([]map[string]any, 0)
+		for rows.Next() {
+			row, scanErr := scanRide(rows)
+			if scanErr != nil {
+				slog.Error("driver rides: scan", "error", scanErr)
+				writeError(w, http.StatusInternalServerError, "internal error")
+				rows.Close()
+				return
+			}
+			rides = append(rides, rideToJSON(row))
+		}
+		if rows.Err() != nil {
+			slog.Error("driver rides: rows iteration", "error", rows.Err())
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{"rides": rides})
+	}
+}

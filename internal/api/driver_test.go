@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -486,6 +487,288 @@ func TestNearbyDrivers_DefaultRadius_Returns200(t *testing.T) {
 	}
 	if len(drivers) != 1 {
 		t.Fatalf("len(drivers)=%d, esperado 1", len(drivers))
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// ========================================================
+// ToggleAvailability tests
+// ========================================================
+
+func TestToggleAvailability_SetTrue_Returns200(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	driverID := uuid.New()
+
+	mock.ExpectExec("UPDATE drivers SET available").
+		WithArgs(true, driverID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	body := mustMarshal(t, map[string]any{"available": true})
+	req := httptest.NewRequest("PATCH", "/drivers/availability", bytes.NewReader(body))
+	ctx := context.WithValue(req.Context(), auth.ClaimsKey, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: driverID.String()},
+		Role:             "driver",
+	})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	ToggleAvailability(mock)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var m map[string]any
+	json.NewDecoder(resp.Body).Decode(&m)
+	if m["available"] != true {
+		t.Errorf("available=%v, esperado true", m["available"])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestToggleAvailability_SetFalse_Returns200(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	driverID := uuid.New()
+
+	mock.ExpectExec("UPDATE drivers SET available").
+		WithArgs(false, driverID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	body := mustMarshal(t, map[string]any{"available": false})
+	req := httptest.NewRequest("PATCH", "/drivers/availability", bytes.NewReader(body))
+	ctx := context.WithValue(req.Context(), auth.ClaimsKey, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: driverID.String()},
+		Role:             "driver",
+	})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	ToggleAvailability(mock)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var m map[string]any
+	json.NewDecoder(resp.Body).Decode(&m)
+	if m["available"] != false {
+		t.Errorf("available=%v, esperado false", m["available"])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestToggleAvailability_MissingField_Returns400(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	driverID := uuid.New()
+
+	body := mustMarshal(t, map[string]any{})
+	req := httptest.NewRequest("PATCH", "/drivers/availability", bytes.NewReader(body))
+	ctx := context.WithValue(req.Context(), auth.ClaimsKey, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: driverID.String()},
+		Role:             "driver",
+	})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	ToggleAvailability(mock)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusBadRequest)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestToggleAvailability_NoAuth_Returns401(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	body := mustMarshal(t, map[string]any{"available": true})
+	req := httptest.NewRequest("PATCH", "/drivers/availability", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	ToggleAvailability(mock)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// ========================================================
+// DriverRides tests
+// ========================================================
+
+func TestDriverRides_HasCompletedRides_Returns200(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	driverID := uuid.New()
+	passengerID := uuid.New()
+	rideID := uuid.New()
+	now := time.Now()
+
+	mock.ExpectQuery("SELECT id, passenger_id, driver_id, status").
+		WithArgs(driverID).
+		WillReturnRows(pgxmock.NewRows([]string{
+			"id", "passenger_id", "driver_id", "status",
+			"pickup_location", "dropoff_location",
+			"pickup_address", "dropoff_address",
+			"fare", "cancelled_by", "cancelled_at", "completed_at",
+			"created_at", "updated_at",
+		}).AddRow(
+			rideID, passengerID, &driverID, "COMPLETED",
+			"POINT(-58.3816 -34.6037)", "POINT(-58.4173 -34.6117)",
+			"Pickup 123", "Dropoff 456",
+			nil, nil, nil, &now,
+			now, now,
+		))
+
+	req := httptest.NewRequest("GET", "/drivers/rides", nil)
+	ctx := context.WithValue(req.Context(), auth.ClaimsKey, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: driverID.String()},
+		Role:             "driver",
+	})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	DriverRides(mock)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body map[string]any
+	json.NewDecoder(resp.Body).Decode(&body)
+	rides, ok := body["rides"].([]any)
+	if !ok {
+		t.Fatal("rides no es un array")
+	}
+	if len(rides) != 1 {
+		t.Fatalf("len(rides)=%d, esperado 1", len(rides))
+	}
+
+	ride := rides[0].(map[string]any)
+	if ride["status"] != "COMPLETED" {
+		t.Errorf("status=%q, esperado COMPLETED", ride["status"])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestDriverRides_Empty_ReturnsEmptyArray(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	driverID := uuid.New()
+
+	mock.ExpectQuery("SELECT id, passenger_id, driver_id, status").
+		WithArgs(driverID).
+		WillReturnRows(pgxmock.NewRows([]string{
+			"id", "passenger_id", "driver_id", "status",
+			"pickup_location", "dropoff_location",
+			"pickup_address", "dropoff_address",
+			"fare", "cancelled_by", "cancelled_at", "completed_at",
+			"created_at", "updated_at",
+		}))
+
+	req := httptest.NewRequest("GET", "/drivers/rides", nil)
+	ctx := context.WithValue(req.Context(), auth.ClaimsKey, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: driverID.String()},
+		Role:             "driver",
+	})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	DriverRides(mock)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var body map[string]any
+	json.NewDecoder(resp.Body).Decode(&body)
+	rides, ok := body["rides"].([]any)
+	if !ok {
+		t.Fatal("rides no es un array")
+	}
+	if len(rides) != 0 {
+		t.Fatalf("len(rides)=%d, esperado 0", len(rides))
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestDriverRides_NoAuth_Returns401(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	req := httptest.NewRequest("GET", "/drivers/rides", nil)
+	w := httptest.NewRecorder()
+	DriverRides(mock)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusUnauthorized)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
