@@ -45,28 +45,35 @@ func main() {
 	jwtSecret := []byte(cfg.JWTSecret)
 	sender := auth.MockSender{}
 
+	// ponytail: two fixed tiers, no per-endpoint config
+	authTier := api.RateLimit(5, time.Minute, api.ClientIP)
+	generalTier := api.RateLimit(60, time.Minute, api.UserIDFromClaims)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", api.Handler(pool))
 	mux.HandleFunc("POST /auth/register/rider", api.RegisterRider(pool, jwtSecret))
 	mux.HandleFunc("POST /auth/register/driver", api.RegisterDriver(pool, jwtSecret))
-	mux.HandleFunc("POST /auth/request-otp", api.RequestOTP(pool, sender))
-	mux.HandleFunc("POST /auth/verify-otp", api.VerifyOTP(pool, jwtSecret))
+	mux.Handle("POST /auth/request-otp", authTier(http.HandlerFunc(api.RequestOTP(pool, sender))))
+	mux.Handle("POST /auth/verify-otp", authTier(http.HandlerFunc(api.VerifyOTP(pool, jwtSecret))))
 	mux.HandleFunc("POST /auth/refresh", api.RefreshToken(pool, jwtSecret))
-	mux.Handle("POST /auth/logout", auth.Auth(jwtSecret)(api.Logout(pool)))
-	mux.Handle("POST /rides", auth.Auth(jwtSecret)(auth.RequireRole("rider")(http.HandlerFunc(api.CreateRide(pool)))))
-	mux.Handle("GET /rides/{id}", auth.Auth(jwtSecret)(auth.RequireRole("rider", "driver")(http.HandlerFunc(api.GetRide(pool)))))
-	mux.Handle("GET /rides", auth.Auth(jwtSecret)(auth.RequireRole("rider", "driver")(http.HandlerFunc(api.ListRides(pool)))))
-	mux.Handle("PATCH /rides/{id}/cancel", auth.Auth(jwtSecret)(auth.RequireRole("rider", "driver")(http.HandlerFunc(api.CancelRide(pool)))))
-	mux.Handle("PATCH /rides/{id}/accept", auth.Auth(jwtSecret)(auth.RequireRole("driver")(http.HandlerFunc(api.AcceptRide(pool)))))
-	mux.Handle("PATCH /rides/{id}/en-route", auth.Auth(jwtSecret)(auth.RequireRole("driver")(http.HandlerFunc(api.EnRouteRide(pool)))))
-	mux.Handle("PATCH /rides/{id}/arrived", auth.Auth(jwtSecret)(auth.RequireRole("driver")(http.HandlerFunc(api.ArrivedRide(pool)))))
-	mux.Handle("PATCH /rides/{id}/start", auth.Auth(jwtSecret)(auth.RequireRole("driver")(http.HandlerFunc(api.StartRide(pool)))))
-	mux.Handle("PATCH /rides/{id}/complete", auth.Auth(jwtSecret)(auth.RequireRole("driver")(http.HandlerFunc(api.CompleteRide(pool, cfg.FareRatePerKm, cfg.FareMinimum)))))
-	mux.Handle("POST /rides/estimate", auth.Auth(jwtSecret)(http.HandlerFunc(api.EstimateRide(pool, cfg.FareRatePerKm, cfg.FareMinimum))))
-	mux.Handle("PATCH /drivers/location", auth.Auth(jwtSecret)(auth.RequireRole("driver")(http.HandlerFunc(api.UpdateLocation(pool)))))
-	mux.Handle("PATCH /drivers/availability", auth.Auth(jwtSecret)(auth.RequireRole("driver")(http.HandlerFunc(api.ToggleAvailability(pool)))))
-	mux.Handle("GET /drivers/rides", auth.Auth(jwtSecret)(auth.RequireRole("driver")(http.HandlerFunc(api.DriverRides(pool)))))
-	mux.Handle("GET /drivers/nearby", auth.Auth(jwtSecret)(auth.RequireRole("rider")(http.HandlerFunc(api.NearbyDrivers(pool)))))
+	mux.Handle("POST /auth/logout", auth.Auth(jwtSecret)(generalTier(api.Logout(pool))))
+	mux.Handle("POST /rides", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("rider")(http.HandlerFunc(api.CreateRide(pool))))))
+	mux.Handle("GET /rides/{id}", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("rider", "driver")(http.HandlerFunc(api.GetRide(pool))))))
+	mux.Handle("GET /rides", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("rider", "driver")(http.HandlerFunc(api.ListRides(pool))))))
+	mux.Handle("PATCH /rides/{id}/cancel", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("rider", "driver")(http.HandlerFunc(api.CancelRide(pool))))))
+	mux.Handle("PATCH /rides/{id}/accept", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("driver")(http.HandlerFunc(api.AcceptRide(pool))))))
+	mux.Handle("PATCH /rides/{id}/en-route", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("driver")(http.HandlerFunc(api.EnRouteRide(pool))))))
+	mux.Handle("PATCH /rides/{id}/arrived", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("driver")(http.HandlerFunc(api.ArrivedRide(pool))))))
+	mux.Handle("PATCH /rides/{id}/start", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("driver")(http.HandlerFunc(api.StartRide(pool))))))
+	mux.Handle("PATCH /rides/{id}/complete", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("driver")(http.HandlerFunc(api.CompleteRide(pool, cfg.FareRatePerKm, cfg.FareMinimum))))))
+	mux.Handle("POST /rides/estimate", auth.Auth(jwtSecret)(generalTier(http.HandlerFunc(api.EstimateRide(pool, cfg.FareRatePerKm, cfg.FareMinimum)))))
+	mux.Handle("PATCH /drivers/location", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("driver")(http.HandlerFunc(api.UpdateLocation(pool))))))
+	mux.Handle("PATCH /drivers/availability", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("driver")(http.HandlerFunc(api.ToggleAvailability(pool))))))
+	mux.Handle("GET /drivers/rides", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("driver")(http.HandlerFunc(api.DriverRides(pool))))))
+	mux.Handle("GET /drivers/nearby", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("rider")(http.HandlerFunc(api.NearbyDrivers(pool))))))
+
+	// Sweep stale rate-limit entries every 5 minutes
+	api.StartRateLimitSweeper(context.Background(), 5*time.Minute)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.HTTPPort,
