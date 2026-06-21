@@ -2,3 +2,6 @@
 *.md
 !README.md
 !openspec/**
+
+# Binarios de compilación
+/server
