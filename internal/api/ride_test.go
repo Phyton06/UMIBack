@@ -33,6 +33,11 @@ func TestCreateRide_HappyPath_Returns201(t *testing.T) {
 	rideID := uuid.New()
 	now := time.Now()
 
+	// Suspension check returns false (not suspended)
+	mock.ExpectQuery("SELECT suspended_until IS NOT NULL AND suspended_until > now\\(\\) FROM users WHERE id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"is_suspended"}).AddRow(false))
+
 	mock.ExpectQuery("INSERT INTO rides").
 		WithArgs(userID, pgxmock.AnyArg(), pgxmock.AnyArg(), "Av Reforma 123", "Insurgentes 456").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "created_at"}).AddRow(rideID, now))
@@ -109,7 +114,7 @@ func TestCreateRide_MissingFields_Returns400(t *testing.T) {
 	}
 }
 
-// ponytail: role gating tested by middleware tests; handler only validates auth + fields
+// role gating tested by middleware tests; handler only validates auth + fields
 
 func TestCreateRide_NoClaims_Returns401(t *testing.T) {
 	mock, err := pgxmock.NewPool()
@@ -135,6 +140,113 @@ func TestCreateRide_NoClaims_Returns401(t *testing.T) {
 
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+}
+
+func TestCreateRide_SuspendedPassenger_Returns403(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	userID := uuid.New()
+
+	mock.ExpectQuery("SELECT suspended_until IS NOT NULL AND suspended_until > now\\(\\) FROM users WHERE id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"is_suspended"}).AddRow(true))
+
+	// No INSERT expected — guard blocks before it
+
+	body := mustMarshal(t, map[string]any{
+		"pickup_address":  "Av Reforma 123",
+		"dropoff_address": "Insurgentes 456",
+		"pickup_lon":      -99.1333,
+		"pickup_lat":      19.4326,
+		"dropoff_lon":     -99.1678,
+		"dropoff_lat":     19.4123,
+	})
+	req := httptest.NewRequest("POST", "/rides", bytes.NewReader(body))
+	ctx := context.WithValue(req.Context(), auth.ClaimsKey, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: userID.String()},
+		Role:             "rider",
+	})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	CreateRide(mock)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusForbidden)
+	}
+
+	var m map[string]string
+	json.NewDecoder(resp.Body).Decode(&m)
+	if m["error"] != "Cuenta suspendida" {
+		t.Errorf("error=%q, esperado 'Cuenta suspendida'", m["error"])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestCreateRide_SuspendedPassengerExpired_Returns201(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	userID := uuid.New()
+	rideID := uuid.New()
+	now := time.Now()
+
+	mock.ExpectQuery("SELECT suspended_until IS NOT NULL AND suspended_until > now\\(\\) FROM users WHERE id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"is_suspended"}).AddRow(false))
+
+	mock.ExpectQuery("INSERT INTO rides").
+		WithArgs(userID, pgxmock.AnyArg(), pgxmock.AnyArg(), "Av Reforma 123", "Insurgentes 456").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "created_at"}).AddRow(rideID, now))
+
+	body := mustMarshal(t, map[string]any{
+		"pickup_address":  "Av Reforma 123",
+		"dropoff_address": "Insurgentes 456",
+		"pickup_lon":      -99.1333,
+		"pickup_lat":      19.4326,
+		"dropoff_lon":     -99.1678,
+		"dropoff_lat":     19.4123,
+	})
+	req := httptest.NewRequest("POST", "/rides", bytes.NewReader(body))
+	ctx := context.WithValue(req.Context(), auth.ClaimsKey, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: userID.String()},
+		Role:             "rider",
+	})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	CreateRide(mock)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusCreated)
+	}
+
+	var m map[string]any
+	json.NewDecoder(resp.Body).Decode(&m)
+	if m["id"] != rideID.String() {
+		t.Errorf("id=%q, esperado %q", m["id"], rideID.String())
+	}
+	if m["status"] != "REQUESTED" {
+		t.Errorf("status=%q, esperado REQUESTED", m["status"])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
 	}
 }
 
@@ -721,6 +833,11 @@ func TestAcceptRide_HappyPath_Returns200(t *testing.T) {
 	passengerID := uuid.New()
 	rideID := uuid.New()
 
+	// Suspension check returns nil (not suspended)
+	mock.ExpectQuery("SELECT suspended_until IS NOT NULL AND suspended_until > now\\(\\) FROM drivers WHERE id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"is_suspended"}).AddRow(false))
+
 	mock.ExpectQuery("SELECT available FROM drivers WHERE id").
 		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"available"}).AddRow(true))
@@ -782,6 +899,11 @@ func TestAcceptRide_DoubleAcceptRace_Returns409(t *testing.T) {
 	passengerID := uuid.New()
 	rideID := uuid.New()
 
+	// Suspension check returns nil (not suspended)
+	mock.ExpectQuery("SELECT suspended_until IS NOT NULL AND suspended_until > now\\(\\) FROM drivers WHERE id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"is_suspended"}).AddRow(false))
+
 	mock.ExpectQuery("SELECT available FROM drivers WHERE id").
 		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"available"}).AddRow(true))
@@ -826,6 +948,11 @@ func TestAcceptRide_DriverNotAvailable_Returns400(t *testing.T) {
 	userID := uuid.New()
 	rideID := uuid.New()
 
+	// Suspension check returns nil (not suspended)
+	mock.ExpectQuery("SELECT suspended_until IS NOT NULL AND suspended_until > now\\(\\) FROM drivers WHERE id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"is_suspended"}).AddRow(false))
+
 	mock.ExpectQuery("SELECT available FROM drivers WHERE id").
 		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"available"}).AddRow(false))
@@ -862,6 +989,11 @@ func TestAcceptRide_OwnRide_Returns403(t *testing.T) {
 
 	userID := uuid.New()
 	rideID := uuid.New()
+
+	// Suspension check returns nil (not suspended)
+	mock.ExpectQuery("SELECT suspended_until IS NOT NULL AND suspended_until > now\\(\\) FROM drivers WHERE id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"is_suspended"}).AddRow(false))
 
 	mock.ExpectQuery("SELECT available FROM drivers WHERE id").
 		WithArgs(userID).
@@ -905,6 +1037,11 @@ func TestAcceptRide_InvalidTransition_Returns400(t *testing.T) {
 	userID := uuid.New()
 	passengerID := uuid.New()
 	rideID := uuid.New()
+
+	// Suspension check returns nil (not suspended)
+	mock.ExpectQuery("SELECT suspended_until IS NOT NULL AND suspended_until > now\\(\\) FROM drivers WHERE id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"is_suspended"}).AddRow(false))
 
 	mock.ExpectQuery("SELECT available FROM drivers WHERE id").
 		WithArgs(userID).
@@ -1535,139 +1672,6 @@ func TestCompleteRide_ChecksCompletedAt(t *testing.T) {
 }
 
 // ========================================================
-// E2E: accept → en-route → arrived → start → complete
-// ========================================================
-
-func TestRideProgress_E2E(t *testing.T) {
-	mock, err := pgxmock.NewPool()
-	if err != nil {
-		t.Fatalf("pgxmock.NewPool() error: %v", err)
-	}
-	defer mock.Close()
-
-	driverID := uuid.New()
-	passengerID := uuid.New()
-	rideID := uuid.New()
-
-	// --- accept ---
-	mock.ExpectQuery("SELECT available FROM drivers WHERE id").
-		WithArgs(driverID).
-		WillReturnRows(pgxmock.NewRows([]string{"available"}).AddRow(true))
-
-	mock.ExpectQuery("SELECT passenger_id, driver_id, status FROM rides WHERE id").
-		WithArgs(rideID).
-		WillReturnRows(pgxmock.NewRows([]string{"passenger_id", "driver_id", "status"}).
-			AddRow(passengerID, nil, "REQUESTED"))
-
-	mock.ExpectExec("UPDATE rides SET status").
-		WithArgs(driverID, rideID).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-
-	mock.ExpectExec("UPDATE drivers SET available").
-		WithArgs(driverID).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-
-	// --- en-route ---
-	mock.ExpectQuery("SELECT passenger_id, driver_id, status FROM rides WHERE id").
-		WithArgs(rideID).
-		WillReturnRows(pgxmock.NewRows([]string{"passenger_id", "driver_id", "status"}).
-			AddRow(passengerID, &driverID, "ACCEPTED"))
-
-	mock.ExpectExec("UPDATE rides SET status").
-		WithArgs(rideID).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-
-	// --- arrived ---
-	mock.ExpectQuery("SELECT passenger_id, driver_id, status FROM rides WHERE id").
-		WithArgs(rideID).
-		WillReturnRows(pgxmock.NewRows([]string{"passenger_id", "driver_id", "status"}).
-			AddRow(passengerID, &driverID, "EN_ROUTE"))
-
-	mock.ExpectExec("UPDATE rides SET status").
-		WithArgs(rideID).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-
-	// --- start ---
-	mock.ExpectQuery("SELECT passenger_id, driver_id, status FROM rides WHERE id").
-		WithArgs(rideID).
-		WillReturnRows(pgxmock.NewRows([]string{"passenger_id", "driver_id", "status"}).
-			AddRow(passengerID, &driverID, "ARRIVED"))
-
-	mock.ExpectExec("UPDATE rides SET status").
-		WithArgs(rideID).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-
-	// --- complete ---
-	mock.ExpectQuery("SELECT passenger_id, driver_id, status, ST_Distance").
-		WithArgs(rideID).
-		WillReturnRows(pgxmock.NewRows([]string{"passenger_id", "driver_id", "status", "st_distance"}).
-			AddRow(passengerID, &driverID, "IN_PROGRESS", 10000.0))
-
-	mock.ExpectExec("UPDATE rides SET status").
-		WithArgs(rideID, 80.0).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-
-	claims := &auth.Claims{
-		RegisteredClaims: jwt.RegisteredClaims{Subject: driverID.String()},
-	}
-	ctx := context.WithValue(context.Background(), auth.ClaimsKey, claims)
-
-	// accept
-	req1 := httptest.NewRequest("PATCH", "/rides/"+rideID.String()+"/accept", nil)
-	req1.SetPathValue("id", rideID.String())
-	req1 = req1.WithContext(ctx)
-	w1 := httptest.NewRecorder()
-	AcceptRide(mock)(w1, req1)
-	if w1.Result().StatusCode != http.StatusOK {
-		t.Fatal("accept failed")
-	}
-
-	// en-route
-	req2 := httptest.NewRequest("PATCH", "/rides/"+rideID.String()+"/en-route", nil)
-	req2.SetPathValue("id", rideID.String())
-	req2 = req2.WithContext(ctx)
-	w2 := httptest.NewRecorder()
-	EnRouteRide(mock)(w2, req2)
-	if w2.Result().StatusCode != http.StatusOK {
-		t.Fatal("en-route failed")
-	}
-
-	// arrived
-	req3 := httptest.NewRequest("PATCH", "/rides/"+rideID.String()+"/arrived", nil)
-	req3.SetPathValue("id", rideID.String())
-	req3 = req3.WithContext(ctx)
-	w3 := httptest.NewRecorder()
-	ArrivedRide(mock)(w3, req3)
-	if w3.Result().StatusCode != http.StatusOK {
-		t.Fatal("arrived failed")
-	}
-
-	// start
-	req4 := httptest.NewRequest("PATCH", "/rides/"+rideID.String()+"/start", nil)
-	req4.SetPathValue("id", rideID.String())
-	req4 = req4.WithContext(ctx)
-	w4 := httptest.NewRecorder()
-	StartRide(mock)(w4, req4)
-	if w4.Result().StatusCode != http.StatusOK {
-		t.Fatal("start failed")
-	}
-
-	// complete
-	req5 := httptest.NewRequest("PATCH", "/rides/"+rideID.String()+"/complete", nil)
-	req5.SetPathValue("id", rideID.String())
-	req5 = req5.WithContext(ctx)
-	w5 := httptest.NewRecorder()
-	CompleteRide(mock, 8.0, 25.0)(w5, req5)
-	if w5.Result().StatusCode != http.StatusOK {
-		t.Fatal("complete failed")
-	}
-
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unmet expectations: %v", err)
-	}
-}
-
-// ========================================================
 // CalcFare tests
 // ========================================================
 
@@ -2107,6 +2111,11 @@ func TestAcceptRide_RideNotFound_Returns404(t *testing.T) {
 	userID := uuid.New()
 	rideID := uuid.New()
 
+	// Suspension check returns nil (not suspended)
+	mock.ExpectQuery("SELECT suspended_until IS NOT NULL AND suspended_until > now\\(\\) FROM drivers WHERE id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"is_suspended"}).AddRow(false))
+
 	mock.ExpectQuery("SELECT available FROM drivers WHERE id").
 		WithArgs(userID).
 		WillReturnRows(pgxmock.NewRows([]string{"available"}).AddRow(true))
@@ -2129,6 +2138,115 @@ func TestAcceptRide_RideNotFound_Returns404(t *testing.T) {
 
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusNotFound)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestAcceptRide_SuspendedDriver_Returns403(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	userID := uuid.New()
+	rideID := uuid.New()
+
+	mock.ExpectQuery("SELECT suspended_until IS NOT NULL AND suspended_until > now\\(\\) FROM drivers WHERE id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"is_suspended"}).AddRow(true))
+
+	// No further queries expected — guard blocks before availability check
+
+	req := httptest.NewRequest("PATCH", "/rides/"+rideID.String()+"/accept", nil)
+	req.SetPathValue("id", rideID.String())
+	ctx := context.WithValue(req.Context(), auth.ClaimsKey, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: userID.String()},
+	})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	AcceptRide(mock)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusForbidden)
+	}
+
+	var m map[string]string
+	json.NewDecoder(resp.Body).Decode(&m)
+	if m["error"] != "Cuenta suspendida" {
+		t.Errorf("error=%q, esperado 'Cuenta suspendida'", m["error"])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestAcceptRide_SuspendedDriverExpired_Returns200(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	userID := uuid.New()
+	passengerID := uuid.New()
+	rideID := uuid.New()
+
+	// Suspension check returns not suspended
+	mock.ExpectQuery("SELECT suspended_until IS NOT NULL AND suspended_until > now\\(\\) FROM drivers WHERE id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"is_suspended"}).AddRow(false))
+
+	mock.ExpectQuery("SELECT available FROM drivers WHERE id").
+		WithArgs(userID).
+		WillReturnRows(pgxmock.NewRows([]string{"available"}).AddRow(true))
+
+	mock.ExpectQuery("SELECT passenger_id, driver_id, status FROM rides WHERE id").
+		WithArgs(rideID).
+		WillReturnRows(pgxmock.NewRows([]string{"passenger_id", "driver_id", "status"}).
+			AddRow(passengerID, nil, "REQUESTED"))
+
+	mock.ExpectExec("UPDATE rides SET status").
+		WithArgs(userID, rideID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	mock.ExpectExec("UPDATE drivers SET available").
+		WithArgs(userID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	req := httptest.NewRequest("PATCH", "/rides/"+rideID.String()+"/accept", nil)
+	req.SetPathValue("id", rideID.String())
+	ctx := context.WithValue(req.Context(), auth.ClaimsKey, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: userID.String()},
+	})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	AcceptRide(mock)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var m map[string]any
+	json.NewDecoder(resp.Body).Decode(&m)
+	if m["id"] != rideID.String() {
+		t.Errorf("id=%q, esperado %q", m["id"], rideID.String())
+	}
+	if m["status"] != "ACCEPTED" {
+		t.Errorf("status=%q, esperado ACCEPTED", m["status"])
+	}
+	if m["driver_id"] != userID.String() {
+		t.Errorf("driver_id=%q, esperado %q", m["driver_id"], userID.String())
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {

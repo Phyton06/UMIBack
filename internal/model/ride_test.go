@@ -1,15 +1,17 @@
 package model
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // testCase estructura para pruebas de transiciones.
 type testCase struct {
-	name     string
-	current  RideStatus
-	target   RideStatus
-	opts     []TransitionOption
-	wantErr  bool
-	wantMsg  string
+	name    string
+	current RideStatus
+	target  RideStatus
+	wantErr bool
+	wantMsg string
 }
 
 func TestCanTransitionTo(t *testing.T) {
@@ -26,15 +28,12 @@ func TestCanTransitionTo(t *testing.T) {
 		{name: "ACCEPTED → CANCELLED", current: StatusAccepted, target: StatusCancelled, wantErr: false},
 		{name: "EN_ROUTE → CANCELLED", current: StatusEnRoute, target: StatusCancelled, wantErr: false},
 		{name: "ARRIVED → CANCELLED", current: StatusArrived, target: StatusCancelled, wantErr: false},
+		{name: "IN_PROGRESS → CANCELLED", current: StatusInProgress, target: StatusCancelled, wantErr: false},
 
 		// === Estados terminales: sin transiciones de salida ===
 		{name: "COMPLETED → IN_PROGRESS rechazado", current: StatusCompleted, target: StatusInProgress, wantErr: true, wantMsg: "terminal"},
 		{name: "COMPLETED → CANCELLED rechazado", current: StatusCompleted, target: StatusCancelled, wantErr: true, wantMsg: "terminal"},
 		{name: "CANCELLED → REQUESTED rechazado", current: StatusCancelled, target: StatusRequested, wantErr: true, wantMsg: "terminal"},
-
-		// === Compuerta IN_PROGRESS → CANCELLED ===
-		{name: "IN_PROGRESS → CANCELLED sin SystemAction rechazado", current: StatusInProgress, target: StatusCancelled, wantErr: true, wantMsg: "WithSystemAction"},
-		{name: "IN_PROGRESS → CANCELLED con SystemAction aceptado", current: StatusInProgress, target: StatusCancelled, opts: []TransitionOption{WithSystemAction()}, wantErr: false},
 
 		// === Transiciones inválidas ===
 		{name: "REQUESTED → IN_PROGRESS rechazado (salto)", current: StatusRequested, target: StatusInProgress, wantErr: true, wantMsg: "no permitida"},
@@ -44,7 +43,7 @@ func TestCanTransitionTo(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := tc.current.CanTransitionTo(tc.target, tc.opts...)
+			err := tc.current.CanTransitionTo(tc.target)
 			if tc.wantErr && err == nil {
 				t.Errorf("%s → %s: esperado error, obtenido nil", tc.current, tc.target)
 			}
@@ -52,28 +51,12 @@ func TestCanTransitionTo(t *testing.T) {
 				t.Errorf("%s → %s: esperado nil, obtenido %v", tc.current, tc.target, err)
 			}
 			if tc.wantErr && tc.wantMsg != "" && err != nil {
-				if !contains(err.Error(), tc.wantMsg) {
+				if !strings.Contains(err.Error(), tc.wantMsg) {
 					t.Errorf("mensaje de error '%s' no contiene '%s'", err.Error(), tc.wantMsg)
 				}
 			}
 		})
 	}
-}
-
-// contains verifica si s contiene substring.
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && search(s, substr)
-}
-
-// search es una búsqueda lineal simple para evitar strings.Contains en entornos
-// donde no se permite importar strings (pruebas autónomas del paquete model).
-func search(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
 
 func TestValidTransitions(t *testing.T) {

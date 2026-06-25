@@ -7,19 +7,29 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// mockPinger simula una base de datos para las pruebas.
-type mockPinger struct {
+// mockPool simula una base de datos para las pruebas de health.
+type mockPool struct {
 	pingErr error
 }
 
-func (m *mockPinger) Ping(_ context.Context) error {
+func (m *mockPool) Ping(_ context.Context) error {
 	return m.pingErr
+}
+func (m *mockPool) QueryRow(_ context.Context, _ string, _ ...any) pgx.Row    { return nil }
+func (m *mockPool) Query(_ context.Context, _ string, _ ...any) (pgx.Rows, error) {
+	return nil, nil
+}
+func (m *mockPool) Exec(_ context.Context, _ string, _ ...any) (pgconn.CommandTag, error) {
+	return pgconn.CommandTag{}, nil
 }
 
 func TestHandler_DBConectado_Retorna200(t *testing.T) {
-	mock := &mockPinger{}
+	mock := &mockPool{}
 	handler := Handler(mock)
 
 	req := httptest.NewRequest("GET", "/health", nil)
@@ -45,7 +55,7 @@ func TestHandler_DBConectado_Retorna200(t *testing.T) {
 }
 
 func TestHandler_DBDesconectado_Retorna503(t *testing.T) {
-	mock := &mockPinger{pingErr: errors.New("conexion rechazada")}
+	mock := &mockPool{pingErr: errors.New("conexion rechazada")}
 	handler := Handler(mock)
 
 	req := httptest.NewRequest("GET", "/health", nil)
@@ -71,7 +81,7 @@ func TestHandler_DBDesconectado_Retorna503(t *testing.T) {
 }
 
 func TestHandler_ContentTypeJSON(t *testing.T) {
-	mock := &mockPinger{}
+	mock := &mockPool{}
 	handler := Handler(mock)
 
 	req := httptest.NewRequest("GET", "/health", nil)

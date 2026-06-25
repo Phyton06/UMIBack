@@ -46,7 +46,6 @@ func SignAccessToken(userID uuid.UUID, role string, secret []byte, expiry time.D
 }
 
 // SignRefreshToken firma un JWT de actualización y retorna el token firmado
-// ponytail: single algo, HS256 inlined
 // junto con los metadatos necesarios para almacenarlo en la base de datos.
 // El TokenHash en RefreshTokenData es el SHA-256 del token firmado.
 func SignRefreshToken(userID uuid.UUID, role string, secret []byte, expiry time.Duration) (string, *RefreshTokenData, error) {

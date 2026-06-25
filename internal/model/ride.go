@@ -43,22 +43,6 @@ var transitionMatrix = map[RideStatus][]RideStatus{
 	StatusInProgress: {StatusCompleted, StatusCancelled},
 }
 
-// transitionOpts almacena opciones para validar una transición.
-type transitionOpts struct {
-	systemAction bool
-}
-
-// TransitionOption es una función que modifica las opciones de transición.
-type TransitionOption func(*transitionOpts)
-
-// WithSystemAction marca la transición como originada por el sistema,
-// necesaria para la compuerta IN_PROGRESS → CANCELLED.
-func WithSystemAction() TransitionOption {
-	return func(o *transitionOpts) {
-		o.systemAction = true
-	}
-}
-
 // Ride representa un viaje de una plataforma de ride-hailing.
 type Ride struct {
 	ID                 uuid.UUID  `json:"id"`
@@ -77,10 +61,8 @@ func (s RideStatus) IsTerminal() bool {
 }
 
 // CanTransitionTo valida si se puede transicionar del estado actual
-// al estado destino. Retorna nil si es válida, o un error descriptivo
-// si no. Acepta opciones como WithSystemAction para la compuerta
-// IN_PROGRESS → CANCELLED.
-func (s RideStatus) CanTransitionTo(target RideStatus, opts ...TransitionOption) error {
+// al estado destino. Retorna nil si es válida, o un error descriptivo si no.
+func (s RideStatus) CanTransitionTo(target RideStatus) error {
 	if s.IsTerminal() {
 		return &ErrInvalidTransition{
 			Current: s, Target: target,
@@ -89,16 +71,6 @@ func (s RideStatus) CanTransitionTo(target RideStatus, opts ...TransitionOption)
 	}
 
 	if s == StatusInProgress && target == StatusCancelled {
-		var cfg transitionOpts
-		for _, opt := range opts {
-			opt(&cfg)
-		}
-		if !cfg.systemAction {
-			return &ErrInvalidTransition{
-				Current: s, Target: target,
-				Reason: "requiere autorizacion del sistema (WithSystemAction)",
-			}
-		}
 		return nil
 	}
 
@@ -121,4 +93,19 @@ func (s RideStatus) ValidTransitions() []RideStatus {
 		return nil
 	}
 	return transitionMatrix[s]
+}
+
+// CancelableStates retorna los estados desde los cuales se puede
+// cancelar un viaje, derivado de transitionMatrix.
+func CancelableStates() []RideStatus {
+	var states []RideStatus
+	for from, tos := range transitionMatrix {
+		for _, to := range tos {
+			if to == StatusCancelled {
+				states = append(states, from)
+				break
+			}
+		}
+	}
+	return states
 }

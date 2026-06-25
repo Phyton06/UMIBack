@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"math"
@@ -11,6 +12,26 @@ import (
 
 	"github.com/Phyton06/UMIBack/internal/auth"
 )
+
+// suspendGuard checks if a user/driver is suspended. If so, it writes a 403
+// response and returns true. On query error, it writes 500 and returns true.
+// Otherwise returns false (caller should continue).
+func suspendGuard(ctx context.Context, pool Pool, table string, id uuid.UUID, w http.ResponseWriter) bool {
+	var isSuspended bool
+	err := pool.QueryRow(ctx,
+		`SELECT suspended_until IS NOT NULL AND suspended_until > now() FROM `+table+` WHERE id = $1`, id,
+	).Scan(&isSuspended)
+	if err != nil {
+		slog.Error("suspend guard: query "+table, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return true
+	}
+	if isSuspended {
+		writeError(w, http.StatusForbidden, "Cuenta suspendida")
+		return true
+	}
+	return false
+}
 
 // UpdateLocation actualiza la ubicación GPS del conductor autenticado.
 //
@@ -57,7 +78,7 @@ func UpdateLocation(pool Pool) http.HandlerFunc {
 			return
 		}
 
-		tag, err := pool.Exec(r.Context(),
+		_, err = pool.Exec(r.Context(),
 			`UPDATE drivers SET location = ST_SetSRID(ST_MakePoint($1, $2), 4326), updated_at = now() WHERE id = $3 AND available = true`,
 			*body.Lon, *body.Lat, driverID,
 		)
@@ -66,9 +87,6 @@ func UpdateLocation(pool Pool) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
-		// ponytail: RowsAffected ignorado a propósito — 200 siempre evita
-		// filtrar el estado de available al conductor.
-		_ = tag
 
 		writeJSON(w, http.StatusOK, map[string]string{"message": "location updated"})
 	}
@@ -167,7 +185,7 @@ func NearbyDrivers(pool Pool) http.HandlerFunc {
 				rows.Close()
 				return
 			}
-			// ponytail: round to 6 decimal places (~0.1m precision)
+			// round to 6 decimal places (~0.1m precision)
 			drivers = append(drivers, driverJSON{
 				ID:   id.String(),
 				Name: name,
@@ -214,6 +232,13 @@ func ToggleAvailability(pool Pool) http.HandlerFunc {
 		if body.Available == nil {
 			writeError(w, http.StatusBadRequest, "available is required")
 			return
+		}
+
+		// Only check suspension when going online
+		if *body.Available {
+			if suspendGuard(r.Context(), pool, "drivers", driverID, w) {
+				return
+			}
 		}
 
 		_, err = pool.Exec(r.Context(),

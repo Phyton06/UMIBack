@@ -15,12 +15,11 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/Phyton06/UMIBack/internal/auth"
-	"github.com/Phyton06/UMIBack/internal/engine"
 	"github.com/Phyton06/UMIBack/internal/model"
 )
 
 // rideCols son las columnas SELECT compartidas entre GetRide y ListRides.
-// ponytail: single source of truth evitó duplicar la lista en 2 handlers
+// single source of truth — shared between GetRide and ListRides
 const rideCols = `id, passenger_id, driver_id, status,
 	ST_AsText(pickup_location), ST_AsText(dropoff_location),
 	pickup_address, dropoff_address,
@@ -50,7 +49,6 @@ func parsePoint(wkt string) (lon, lat float64, err error) {
 
 // formatPoint genera "POINT(lon lat)" para ST_GeomFromText.
 func formatPoint(lon, lat float64) string {
-	// ponytail: %v avoids extra trailing zeros from %f
 	return fmt.Sprintf("POINT(%v %v)", lon, lat)
 }
 
@@ -92,7 +90,7 @@ func rideToJSON(r rideRow) map[string]any {
 	pickupLon, pickupLat, _ := parsePoint(r.PickupWKT)
 	dropoffLon, dropoffLat, _ := parsePoint(r.DropoffWKT)
 
-	// ponytail: round to 6 decimal places (~0.1m precision)
+	// round to 6 decimal places (~0.1m precision)
 	m := map[string]any{
 		"id":              r.ID.String(),
 		"passenger_id":    r.PassengerID.String(),
@@ -217,8 +215,6 @@ func CreateRide(pool Pool) http.HandlerFunc {
 			return
 		}
 
-		// ponytail: role gated by RequireRole middleware, no need to double-check
-
 		userID, err := uuid.Parse(claims.Subject)
 		if err != nil {
 			writeError(w, http.StatusUnauthorized, "invalid token claims")
@@ -242,6 +238,11 @@ func CreateRide(pool Pool) http.HandlerFunc {
 			body.PickupLon == nil || body.PickupLat == nil ||
 			body.DropoffLon == nil || body.DropoffLat == nil {
 			writeError(w, http.StatusBadRequest, "all fields are required")
+			return
+		}
+
+		// Check rider suspension before allowing ride creation
+		if suspendGuard(r.Context(), pool, "users", userID, w) {
 			return
 		}
 
@@ -465,25 +466,18 @@ func CancelRide(pool Pool) http.HandlerFunc {
 		}
 
 		// Validate state transition
-		if err := engine.CanTransition(model.RideStatus(currentStatus), model.StatusCancelled); err != nil {
+		if err := model.RideStatus(currentStatus).CanTransitionTo(model.StatusCancelled); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 
 		// Conditional UPDATE for race safety: if status changed between
 		// SELECT and UPDATE, zero rows match → 409.
-		// ponytail: pre-cancel states duplicate state machine; update if matrix changes
 		tag, err := pool.Exec(r.Context(),
 			`UPDATE rides
 			 SET status = 'CANCELLED', cancelled_by = $1, cancelled_at = now(), updated_at = now()
 			 WHERE id = $2 AND status = ANY($3::varchar[])`,
-			userID.String(), rideID,
-			[]string{
-				string(model.StatusRequested),
-				string(model.StatusAccepted),
-				string(model.StatusEnRoute),
-				string(model.StatusArrived),
-			},
+			userID.String(), rideID, model.CancelableStates(),
 		)
 		if err != nil {
 			slog.Error("cancel ride: update", "error", err)
@@ -534,6 +528,11 @@ func AcceptRide(pool Pool) http.HandlerFunc {
 			return
 		}
 
+		// Check driver suspension before availability
+		if suspendGuard(r.Context(), pool, "drivers", userID, w) {
+			return
+		}
+
 		// Check driver availability
 		var available bool
 		err = pool.QueryRow(r.Context(),
@@ -578,7 +577,7 @@ func AcceptRide(pool Pool) http.HandlerFunc {
 		}
 
 		// Validate state transition
-		if err := engine.CanTransition(model.RideStatus(currentStatus), model.StatusAccepted); err != nil {
+		if err := model.RideStatus(currentStatus).CanTransitionTo(model.StatusAccepted); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -601,7 +600,7 @@ func AcceptRide(pool Pool) http.HandlerFunc {
 			return
 		}
 
-		// ponytail: non-critical — ride is already assigned, log and continue on error
+		// non-critical — ride is already assigned, log and continue on error
 		_, err = pool.Exec(r.Context(),
 			`UPDATE drivers SET available = false WHERE id = $1`, userID,
 		)
@@ -648,7 +647,6 @@ func EnRouteRide(pool Pool) http.HandlerFunc {
 		}
 
 		// SELECT current ride for access control + state validation
-		// ponytail: passenger_id not needed here (driver-only access)
 		var driverID *uuid.UUID
 		var currentStatus string
 		err = pool.QueryRow(r.Context(),
@@ -672,7 +670,7 @@ func EnRouteRide(pool Pool) http.HandlerFunc {
 		}
 
 		// Validate state transition
-		if err := engine.CanTransition(model.RideStatus(currentStatus), model.StatusEnRoute); err != nil {
+		if err := model.RideStatus(currentStatus).CanTransitionTo(model.StatusEnRoute); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -752,7 +750,7 @@ func ArrivedRide(pool Pool) http.HandlerFunc {
 			return
 		}
 
-		if err := engine.CanTransition(model.RideStatus(currentStatus), model.StatusArrived); err != nil {
+		if err := model.RideStatus(currentStatus).CanTransitionTo(model.StatusArrived); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -831,7 +829,7 @@ func StartRide(pool Pool) http.HandlerFunc {
 			return
 		}
 
-		if err := engine.CanTransition(model.RideStatus(currentStatus), model.StatusInProgress); err != nil {
+		if err := model.RideStatus(currentStatus).CanTransitionTo(model.StatusInProgress); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -913,7 +911,7 @@ func CompleteRide(pool Pool, ratePerKm, minimum float64) http.HandlerFunc {
 			return
 		}
 
-		if err := engine.CanTransition(model.RideStatus(currentStatus), model.StatusCompleted); err != nil {
+		if err := model.RideStatus(currentStatus).CanTransitionTo(model.StatusCompleted); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -936,7 +934,7 @@ func CompleteRide(pool Pool, ratePerKm, minimum float64) http.HandlerFunc {
 			return
 		}
 
-		// ponytail: non-critical — ride is already completed, log and continue on error
+		// non-critical — ride is already completed, log and continue on error
 		_, err = pool.Exec(r.Context(),
 			`UPDATE drivers SET available = true WHERE id = $1`, userID,
 		)

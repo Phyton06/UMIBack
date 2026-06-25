@@ -1,0 +1,7 @@
+DELETE FROM admins WHERE phone LIKE '+525500000%';
+DELETE FROM drivers WHERE phone LIKE '+525500000%';
+DELETE FROM users WHERE phone LIKE '+525500000%';
+
+DROP TABLE IF EXISTS admins;
+ALTER TABLE users DROP COLUMN IF EXISTS suspended_until;
+ALTER TABLE drivers DROP COLUMN IF EXISTS suspended_until;
