@@ -25,10 +25,10 @@ func TestAdminCreateDriver_Success_Returns201(t *testing.T) {
 
 	driverID := uuid.New()
 	mock.ExpectQuery("INSERT INTO drivers").
-		WithArgs("+525511111111", "Test Driver").
+		WithArgs("5511111111", "Test Driver").
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(driverID))
 
-	body := mustMarshal(t, map[string]string{"phone": "+525511111111", "name": "Test Driver"})
+	body := mustMarshal(t, map[string]string{"phone": "5511111111", "name": "Test Driver"})
 	req := httptest.NewRequest("POST", "/admin/drivers", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	AdminCreateDriver(mock)(w, req)
@@ -57,10 +57,10 @@ func TestAdminCreateDriver_DuplicatePhone_Returns409(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectQuery("INSERT INTO drivers").
-		WithArgs("+525511111111", "Dup").
+		WithArgs("5511111111", "Dup").
 		WillReturnError(&pgconn.PgError{Code: "23505"})
 
-	body := mustMarshal(t, map[string]string{"phone": "+525511111111", "name": "Dup"})
+	body := mustMarshal(t, map[string]string{"phone": "5511111111", "name": "Dup"})
 	req := httptest.NewRequest("POST", "/admin/drivers", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	AdminCreateDriver(mock)(w, req)
@@ -88,9 +88,9 @@ func TestAdminCreateDriver_MissingFields_Returns400(t *testing.T) {
 		body map[string]string
 	}{
 		{"empty phone", map[string]string{"phone": "", "name": "X"}},
-		{"empty name", map[string]string{"phone": "+525511111111", "name": ""}},
+		{"empty name", map[string]string{"phone": "5511111111", "name": ""}},
 		{"missing phone", map[string]string{"name": "X"}},
-		{"missing name", map[string]string{"phone": "+525511111111"}},
+		{"missing name", map[string]string{"phone": "5511111111"}},
 	}
 
 	for _, tc := range tests {
@@ -127,7 +127,7 @@ func TestListDrivers_Returns200WithDriversAndTotal(t *testing.T) {
 	mock.ExpectQuery("SELECT id, phone, name, available, membresia_active_until, suspended_until, created_at FROM drivers").
 		WithArgs(20, 0).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "phone", "name", "available", "membresia_active_until", "suspended_until", "created_at"}).
-			AddRow(driverID, "+525511111111", "Driver1", true, nil, nil, now))
+			AddRow(driverID, "5511111111", "Driver1", true, nil, nil, now))
 
 	req := httptest.NewRequest("GET", "/admin/drivers?limit=20&offset=0", nil)
 	w := httptest.NewRecorder()
@@ -219,7 +219,7 @@ func TestListDrivers_StatusFilterSuspended_ReturnsFiltered(t *testing.T) {
 	mock.ExpectQuery("SELECT id, phone, name, available, membresia_active_until, suspended_until, created_at FROM drivers WHERE suspended_until > now\\(\\) ORDER BY created_at DESC LIMIT \\$1 OFFSET \\$2").
 		WithArgs(20, 0).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "phone", "name", "available", "membresia_active_until", "suspended_until", "created_at"}).
-			AddRow(driverID, "+525511111111", "Suspended", false, nil, &future, now))
+			AddRow(driverID, "5511111111", "Suspended", false, nil, &future, now))
 
 	req := httptest.NewRequest("GET", "/admin/drivers?status=suspended", nil)
 	w := httptest.NewRecorder()
@@ -281,7 +281,7 @@ func TestListPassengers_Returns200WithPassengersAndTotal(t *testing.T) {
 	mock.ExpectQuery("SELECT id, phone, name, suspended_until, created_at FROM users ORDER BY created_at DESC").
 		WithArgs(20, 0).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "phone", "name", "suspended_until", "created_at"}).
-			AddRow(userID, "+525511111111", "Passenger1", nil, now))
+			AddRow(userID, "5511111111", "Passenger1", nil, now))
 
 	req := httptest.NewRequest("GET", "/admin/passengers?limit=20&offset=0", nil)
 	w := httptest.NewRecorder()

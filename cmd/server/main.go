@@ -58,13 +58,13 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", api.Handler(pool))
-	mux.HandleFunc("POST /auth/register/rider", api.RegisterRider(pool, jwtSecret))
-	mux.HandleFunc("POST /auth/register/driver", api.RegisterDriver(pool, jwtSecret))
-	mux.HandleFunc("POST /auth/register/admin", api.RegisterAdmin(pool, jwtSecret))
-	mux.Handle("POST /auth/request-otp", authTier(http.HandlerFunc(api.RequestOTP(pool, sender))))
-	mux.Handle("POST /auth/verify-otp", authTier(http.HandlerFunc(api.VerifyOTP(pool, jwtSecret))))
-	mux.HandleFunc("POST /auth/refresh", api.RefreshToken(pool, jwtSecret))
-	mux.Handle("POST /auth/logout", auth.Auth(jwtSecret)(generalTier(api.Logout(pool))))
+	mux.Handle("POST /auth/register/rider", http.HandlerFunc(api.RequireJSON(api.RegisterRider(pool, jwtSecret))))
+	mux.Handle("POST /auth/register/driver", http.HandlerFunc(api.RequireJSON(api.RegisterDriver(pool, jwtSecret))))
+	mux.Handle("POST /auth/register/admin", http.HandlerFunc(api.RequireJSON(api.RegisterAdmin(pool, jwtSecret))))
+	mux.Handle("POST /auth/request-otp", authTier(http.HandlerFunc(api.RequireJSON(api.RequestOTP(pool, sender)))))
+	mux.Handle("POST /auth/verify-otp", authTier(http.HandlerFunc(api.RequireJSON(api.VerifyOTP(pool, jwtSecret)))))
+	mux.Handle("POST /auth/refresh", http.HandlerFunc(api.RequireJSON(api.RefreshToken(pool, jwtSecret))))
+	mux.Handle("POST /auth/logout", auth.Auth(jwtSecret)(generalTier(http.HandlerFunc(api.RequireJSON(api.Logout(pool))))))
 	mux.Handle("POST /rides", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("rider")(http.HandlerFunc(api.CreateRide(pool))))))
 	mux.Handle("GET /rides/{id}", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("rider", "driver")(http.HandlerFunc(api.GetRide(pool))))))
 	mux.Handle("GET /rides", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("rider", "driver")(http.HandlerFunc(api.ListRides(pool))))))
@@ -96,9 +96,10 @@ func main() {
 	// Sweep stale rate-limit entries every 5 minutes
 	api.StartRateLimitSweeper(context.Background(), 5*time.Minute)
 
+	handler := api.CORS(mux)
 	srv := &http.Server{
 		Addr:         ":" + cfg.HTTPPort,
-		Handler:      mux,
+		Handler:      handler,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  60 * time.Second,
