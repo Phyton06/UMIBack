@@ -25,11 +25,6 @@ type Config struct {
 //   - DB_URL:              cadena de conexión a PostgreSQL (requerida)
 //   - LOG_LEVEL:           nivel de registro (por omisión: "info")
 //   - JWT_SECRET:          clave secreta para firmar JWT (requerida)
-//   - JWT_EXPIRY_ACCESS:   duración del access token (por omisión: "15m")
-//   - JWT_EXPIRY_REFRESH:  duración del refresh token (por omisión: "168h")
-//   - OTP_LENGTH:          cantidad de dígitos del OTP (por omisión: 6)
-//   - OTP_TTL:             tiempo de vida del OTP (por omisión: "5m")
-//   - SMS_MOCK:            usa MockSender en lugar de SMS real (por omisión: true)
 func NewConfig() (Config, error) {
 	dbURL := os.Getenv("DB_URL")
 	if dbURL == "" {
@@ -60,8 +55,6 @@ func NewConfig() (Config, error) {
 		FareMinimum:   parseFloatEnv("FARE_MINIMUM", 25.0),
 	}, nil
 }
-
-// ponytail: only JWT_SECRET is used from the new fields; OTP/expiry/SMS are hardcoded in handlers
 
 // parseFloatEnv parsea un float64 desde una variable de entorno.
 // Si la variable está vacía, retorna el valor por omisión.

@@ -92,7 +92,7 @@ func TestTokenBucket_IndependentKeys(t *testing.T) {
 	}
 }
 
-// ponytail: no time-mocking, use small windows for real-time tests
+// no time-mocking, use small windows for real-time tests
 func TestTokenBucket_CapacityCapped(t *testing.T) {
 	tb := newTokenBucket(3, 100*time.Millisecond)
 

@@ -24,7 +24,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.SetLogLoggerLevel(parseLogLevel(cfg.LogLevel))
+	var l slog.Level
+	if err := l.UnmarshalText([]byte(cfg.LogLevel)); err != nil {
+		l = slog.LevelInfo
+	}
+	slog.SetLogLoggerLevel(l)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -45,14 +49,18 @@ func main() {
 	jwtSecret := []byte(cfg.JWTSecret)
 	sender := auth.MockSender{}
 
-	// ponytail: two fixed tiers, no per-endpoint config
+	// two fixed tiers, no per-endpoint config
 	authTier := api.RateLimit(5, time.Minute, api.ClientIP)
 	generalTier := api.RateLimit(60, time.Minute, api.UserIDFromClaims)
+	adminChain := func(h http.Handler) http.Handler {
+		return auth.Auth(jwtSecret)(generalTier(auth.RequireRole("admin")(h)))
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", api.Handler(pool))
 	mux.HandleFunc("POST /auth/register/rider", api.RegisterRider(pool, jwtSecret))
 	mux.HandleFunc("POST /auth/register/driver", api.RegisterDriver(pool, jwtSecret))
+	mux.HandleFunc("POST /auth/register/admin", api.RegisterAdmin(pool, jwtSecret))
 	mux.Handle("POST /auth/request-otp", authTier(http.HandlerFunc(api.RequestOTP(pool, sender))))
 	mux.Handle("POST /auth/verify-otp", authTier(http.HandlerFunc(api.VerifyOTP(pool, jwtSecret))))
 	mux.HandleFunc("POST /auth/refresh", api.RefreshToken(pool, jwtSecret))
@@ -71,9 +79,19 @@ func main() {
 	mux.Handle("PATCH /drivers/availability", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("driver")(http.HandlerFunc(api.ToggleAvailability(pool))))))
 	mux.Handle("GET /drivers/rides", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("driver")(http.HandlerFunc(api.DriverRides(pool))))))
 	mux.Handle("GET /drivers/nearby", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("rider")(http.HandlerFunc(api.NearbyDrivers(pool))))))
-	// ponytail: generalTier for rider endpoints matches the existing pattern
+	// generalTier for rider endpoints matches the existing pattern
 	mux.Handle("GET /rider/stats", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("rider")(http.HandlerFunc(api.RiderStats(pool))))))
 	mux.Handle("GET /rider/rides", auth.Auth(jwtSecret)(generalTier(auth.RequireRole("rider")(http.HandlerFunc(api.RiderRides(pool))))))
+
+	// Admin routes — protected by adminChain (Auth + RequireRole("admin"))
+	mux.Handle("POST /admin/drivers", adminChain(http.HandlerFunc(api.AdminCreateDriver(pool))))
+	mux.Handle("GET /admin/drivers", adminChain(http.HandlerFunc(api.ListDrivers(pool))))
+	mux.Handle("GET /admin/passengers", adminChain(http.HandlerFunc(api.ListPassengers(pool))))
+	mux.Handle("PATCH /admin/drivers/{id}/suspend", adminChain(http.HandlerFunc(api.SuspendDriver(pool))))
+	mux.Handle("PATCH /admin/drivers/{id}/unsuspend", adminChain(http.HandlerFunc(api.UnsuspendDriver(pool))))
+	mux.Handle("PATCH /admin/passengers/{id}/suspend", adminChain(http.HandlerFunc(api.SuspendPassenger(pool))))
+	mux.Handle("PATCH /admin/passengers/{id}/unsuspend", adminChain(http.HandlerFunc(api.UnsuspendPassenger(pool))))
+	mux.Handle("PATCH /admin/drivers/{id}/membership", adminChain(http.HandlerFunc(api.SetMembership(pool))))
 
 	// Sweep stale rate-limit entries every 5 minutes
 	api.StartRateLimitSweeper(context.Background(), 5*time.Minute)
@@ -119,20 +137,4 @@ func main() {
 	slog.Info("servidor finalizado")
 }
 
-// parseLogLevel convierte un string a slog.Level.
-// Valores válidos: debug, info, warn, error.
-// Por omisión retorna slog.LevelInfo.
-func parseLogLevel(level string) slog.Level {
-	switch level {
-	case "debug":
-		return slog.LevelDebug
-	case "info":
-		return slog.LevelInfo
-	case "warn":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
-		return slog.LevelInfo
-	}
-}
+

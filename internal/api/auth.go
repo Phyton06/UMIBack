@@ -1,9 +1,9 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -23,14 +23,20 @@ type Pool interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Ping(ctx context.Context) error
 }
 
-// ponytail: Pool interface kept for pgxmock testability, compile-time assert removed
+// Pool interface kept for pgxmock testability — compile-time check via interface satisfaction
 
 const (
 	defaultAccessExpiry  = 15 * time.Minute
 	defaultRefreshExpiry = 168 * time.Hour // 7 days
 )
+
+// isValidRole verifica si el rol está entre los permitidos.
+func isValidRole(role string) bool {
+	return role == "rider" || role == "driver" || role == "admin"
+}
 
 // writeJSON escribe una respuesta JSON con el código de estado indicado.
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -184,6 +190,75 @@ func RegisterDriver(pool Pool, jwtSecret []byte) http.HandlerFunc {
 	}
 }
 
+// RegisterAdmin crea un nuevo admin y emite un par JWT.
+//
+// Request:  POST /auth/register/admin  {phone, name}
+// Response: 201 {admin_id, access_token, refresh_token}
+// Errors:   400 si faltan campos, 409 si el teléfono ya existe
+func RegisterAdmin(pool Pool, jwtSecret []byte) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Phone string `json:"phone"`
+			Name  string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+
+		if body.Phone == "" || body.Name == "" {
+			writeError(w, http.StatusBadRequest, "phone and name are required")
+			return
+		}
+
+		var adminID uuid.UUID
+		err := pool.QueryRow(r.Context(),
+			`INSERT INTO admins (phone, name) VALUES ($1, $2) RETURNING id`,
+			body.Phone, body.Name,
+		).Scan(&adminID)
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+				writeError(w, http.StatusConflict, "phone already registered")
+				return
+			}
+			slog.Error("register admin: insert", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		accessToken, err := auth.SignAccessToken(adminID, "admin", jwtSecret, defaultAccessExpiry)
+		if err != nil {
+			slog.Error("register admin: sign access", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		refreshToken, rtData, err := auth.SignRefreshToken(adminID, "admin", jwtSecret, defaultRefreshExpiry)
+		if err != nil {
+			slog.Error("register admin: sign refresh", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		_, err = pool.Exec(r.Context(),
+			`INSERT INTO refresh_tokens (user_id, role, token_hash, expires_at) VALUES ($1, $2, $3, $4)`,
+			adminID, "admin", rtData.TokenHash, rtData.ExpiresAt,
+		)
+		if err != nil {
+			slog.Error("register admin: store refresh", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"admin_id":      adminID.String(),
+			"access_token":  accessToken,
+			"refresh_token": refreshToken,
+		})
+	}
+}
+
 // --- OTP ---
 
 // RequestOTP genera un código OTP, lo almacena hasheado y lo envía (mock: log).
@@ -206,8 +281,8 @@ func RequestOTP(pool Pool, sender auth.Sender) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "phone is required")
 			return
 		}
-		if body.Role != "rider" && body.Role != "driver" {
-			writeError(w, http.StatusBadRequest, "role must be 'rider' or 'driver'")
+		if !isValidRole(body.Role) {
+			writeError(w, http.StatusBadRequest, "role must be 'rider', 'driver', or 'admin'")
 			return
 		}
 
@@ -265,8 +340,8 @@ func VerifyOTP(pool Pool, jwtSecret []byte) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "phone and code are required")
 			return
 		}
-		if body.Role != "rider" && body.Role != "driver" {
-			writeError(w, http.StatusBadRequest, "role must be 'rider' or 'driver'")
+		if !isValidRole(body.Role) {
+			writeError(w, http.StatusBadRequest, "role must be 'rider', 'driver', or 'admin'")
 			return
 		}
 
@@ -299,7 +374,7 @@ func VerifyOTP(pool Pool, jwtSecret []byte) http.HandlerFunc {
 		}
 
 		inputHash := auth.HashOTP(body.Code)
-		if !bytes.Equal(storedHash, inputHash) {
+		if subtle.ConstantTimeCompare(storedHash, inputHash) != 1 {
 			_, err := pool.Exec(r.Context(),
 				`UPDATE otp_codes SET attempts = attempts + 1 WHERE phone = $1 AND role = $2`,
 				body.Phone, body.Role,
@@ -324,13 +399,18 @@ func VerifyOTP(pool Pool, jwtSecret []byte) http.HandlerFunc {
 
 		// Look up user by phone to issue JWT for the correct identity.
 		var userID uuid.UUID
-		if body.Role == "rider" {
+		switch body.Role {
+		case "rider":
 			err = pool.QueryRow(r.Context(),
 				`SELECT id FROM users WHERE phone = $1`, body.Phone,
 			).Scan(&userID)
-		} else {
+		case "driver":
 			err = pool.QueryRow(r.Context(),
 				`SELECT id FROM drivers WHERE phone = $1`, body.Phone,
+			).Scan(&userID)
+		default: // admin
+			err = pool.QueryRow(r.Context(),
+				`SELECT id FROM admins WHERE phone = $1`, body.Phone,
 			).Scan(&userID)
 		}
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -508,4 +588,4 @@ func Logout(pool Pool) http.HandlerFunc {
 	}
 }
 
-// ponytail: bytes.Equal is sufficient for OTP hash comparison (short-lived, low-stakes)
+// constant-time comparison prevents timing side-channels on OTP verification

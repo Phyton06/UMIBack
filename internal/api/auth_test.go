@@ -330,7 +330,7 @@ func TestRequestOTP_InvalidRole_Returns400(t *testing.T) {
 	}
 	defer mock.Close()
 
-	body := mustMarshal(t, map[string]string{"phone": "+525511111111", "role": "admin"})
+	body := mustMarshal(t, map[string]string{"phone": "+525511111111", "role": "superadmin"})
 	req := httptest.NewRequest("POST", "/auth/request-otp", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	RequestOTP(mock, auth.MockSender{})(w, req)
@@ -395,6 +395,202 @@ func TestVerifyOTP_MaxAttempts_Returns429(t *testing.T) {
 	resp := w.Result()
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("status=%d, esperado 429", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// --- Admin OTP flow tests ---
+
+func TestRegisterAdmin_CreatesAdminAndReturnsJWT(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	adminID := uuid.New()
+
+	mock.ExpectQuery("INSERT INTO admins").
+		WithArgs("+525500000001", "Admin Test").
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(adminID))
+
+	mock.ExpectExec("INSERT INTO refresh_tokens").
+		WithArgs(adminID, "admin", pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	body := mustMarshal(t, map[string]string{"phone": "+525500000001", "name": "Admin Test"})
+	req := httptest.NewRequest("POST", "/auth/register/admin", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	RegisterAdmin(mock, []byte("test-secret"))(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status=%d, esperado 201", resp.StatusCode)
+	}
+	m := mustDecodeMap(t, resp)
+	resp.Body.Close()
+
+	if m["admin_id"] == "" {
+		t.Fatal("admin_id vacío")
+	}
+	if m["access_token"] == "" {
+		t.Fatal("access_token vacío")
+	}
+	if m["refresh_token"] == "" {
+		t.Fatal("refresh_token vacío")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestRequestOTP_AdminRole_Returns200(t *testing.T) {
+	logBuf, restoreLog := captureLog()
+	defer restoreLog()
+
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectExec("INSERT INTO otp_codes").
+		WithArgs("+525500000001", "admin", pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	body := mustMarshal(t, map[string]string{"phone": "+525500000001", "role": "admin"})
+	req := httptest.NewRequest("POST", "/auth/request-otp", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	RequestOTP(mock, auth.MockSender{})(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, esperado 200", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+
+	otpCode := extractOTP(logBuf)
+	if otpCode == "" {
+		t.Fatal("OTP code not found in slog output")
+	}
+	t.Logf("OTP for admin: %s", otpCode)
+}
+
+func TestVerifyOTP_AdminRole_QueriesAdminsTable(t *testing.T) {
+	_, restoreLog := captureLog()
+	defer restoreLog()
+
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	adminID := uuid.New()
+	phone := "+525500000001"
+	otpCode := "123456"
+	otpHash := auth.HashOTP(otpCode)
+	future := time.Now().Add(5 * time.Minute)
+
+	mock.ExpectQuery("SELECT code_hash, attempts, expires_at").
+		WithArgs(phone, "admin").
+		WillReturnRows(pgxmock.NewRows([]string{"code_hash", "attempts", "expires_at"}).
+			AddRow(otpHash, int16(0), future))
+
+	mock.ExpectExec("DELETE FROM otp_codes").
+		WithArgs(phone, "admin").
+		WillReturnResult(pgxmock.NewResult("DELETE", 1))
+
+	mock.ExpectQuery("SELECT id FROM admins").
+		WithArgs(phone).
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(adminID))
+
+	mock.ExpectExec("INSERT INTO refresh_tokens").
+		WithArgs(adminID, "admin", pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	body := mustMarshal(t, map[string]string{"phone": phone, "role": "admin", "code": otpCode})
+	req := httptest.NewRequest("POST", "/auth/verify-otp", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	VerifyOTP(mock, []byte("test-secret"))(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, esperado 200", resp.StatusCode)
+	}
+	m := mustDecodeMap(t, resp)
+	resp.Body.Close()
+
+	if m["access_token"] == "" {
+		t.Fatal("access_token vacío")
+	}
+	if m["refresh_token"] == "" {
+		t.Fatal("refresh_token vacío")
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestRegisterAdmin_DuplicatePhone_Returns409(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectQuery("INSERT INTO admins").
+		WithArgs("+525500000001", "Dup Admin").
+		WillReturnError(&pgconn.PgError{Code: "23505"})
+
+	body := mustMarshal(t, map[string]string{"phone": "+525500000001", "name": "Dup Admin"})
+	req := httptest.NewRequest("POST", "/auth/register/admin", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	RegisterAdmin(mock, []byte("secret"))(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status=%d, esperado 409", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestRequestOTP_InvalidRoleAdminNowValid_Returns200(t *testing.T) {
+	_, restoreLog := captureLog()
+	defer restoreLog()
+
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectExec("INSERT INTO otp_codes").
+		WithArgs("+525500000001", "admin", pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	body := mustMarshal(t, map[string]string{"phone": "+525500000001", "role": "admin"})
+	req := httptest.NewRequest("POST", "/auth/request-otp", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	RequestOTP(mock, auth.MockSender{})(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, esperado 200 (admin role is now valid)", resp.StatusCode)
 	}
 	resp.Body.Close()
 

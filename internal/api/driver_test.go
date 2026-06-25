@@ -507,6 +507,11 @@ func TestToggleAvailability_SetTrue_Returns200(t *testing.T) {
 
 	driverID := uuid.New()
 
+	// Suspension check returns nil (not suspended)
+	mock.ExpectQuery("SELECT suspended_until IS NOT NULL AND suspended_until > now\\(\\) FROM drivers WHERE id").
+		WithArgs(driverID).
+		WillReturnRows(pgxmock.NewRows([]string{"is_suspended"}).AddRow(false))
+
 	mock.ExpectExec("UPDATE drivers SET available").
 		WithArgs(true, driverID).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
@@ -628,6 +633,94 @@ func TestToggleAvailability_NoAuth_Returns401(t *testing.T) {
 
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusUnauthorized)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestToggleAvailability_Suspended_Returns403(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	driverID := uuid.New()
+
+	mock.ExpectQuery("SELECT suspended_until IS NOT NULL AND suspended_until > now\\(\\) FROM drivers WHERE id").
+		WithArgs(driverID).
+		WillReturnRows(pgxmock.NewRows([]string{"is_suspended"}).AddRow(true))
+
+	// No UPDATE expected — guard blocks before it
+
+	body := mustMarshal(t, map[string]any{"available": true})
+	req := httptest.NewRequest("PATCH", "/drivers/availability", bytes.NewReader(body))
+	ctx := context.WithValue(req.Context(), auth.ClaimsKey, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: driverID.String()},
+		Role:             "driver",
+	})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	ToggleAvailability(mock)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusForbidden)
+	}
+
+	var m map[string]string
+	json.NewDecoder(resp.Body).Decode(&m)
+	if m["error"] != "Cuenta suspendida" {
+		t.Errorf("error=%q, esperado 'Cuenta suspendida'", m["error"])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestToggleAvailability_SuspendedExpired_Returns200(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	driverID := uuid.New()
+
+	mock.ExpectQuery("SELECT suspended_until IS NOT NULL AND suspended_until > now\\(\\) FROM drivers WHERE id").
+		WithArgs(driverID).
+		WillReturnRows(pgxmock.NewRows([]string{"is_suspended"}).AddRow(false))
+
+	mock.ExpectExec("UPDATE drivers SET available").
+		WithArgs(true, driverID).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	body := mustMarshal(t, map[string]any{"available": true})
+	req := httptest.NewRequest("PATCH", "/drivers/availability", bytes.NewReader(body))
+	ctx := context.WithValue(req.Context(), auth.ClaimsKey, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: driverID.String()},
+		Role:             "driver",
+	})
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	ToggleAvailability(mock)(w, req)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, esperado %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var m map[string]any
+	json.NewDecoder(resp.Body).Decode(&m)
+	if m["available"] != true {
+		t.Errorf("available=%v, esperado true", m["available"])
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
