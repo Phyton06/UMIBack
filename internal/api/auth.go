@@ -282,6 +282,36 @@ func RequestOTP(pool Pool, sender auth.Sender) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "phone is required")
 			return
 		}
+		if body.Role == "" {
+			// Auto-detect by checking which table has this phone
+			var detectedRole string
+			var id uuid.UUID
+			err := pool.QueryRow(r.Context(), `SELECT id FROM users WHERE phone = $1`, body.Phone).Scan(&id)
+			if err == nil {
+				detectedRole = "rider"
+			} else if errors.Is(err, pgx.ErrNoRows) {
+				err = pool.QueryRow(r.Context(), `SELECT id FROM drivers WHERE phone = $1`, body.Phone).Scan(&id)
+				if err == nil {
+					detectedRole = "driver"
+				} else if errors.Is(err, pgx.ErrNoRows) {
+					err = pool.QueryRow(r.Context(), `SELECT id FROM admins WHERE phone = $1`, body.Phone).Scan(&id)
+					if err == nil {
+						detectedRole = "admin"
+					} else if errors.Is(err, pgx.ErrNoRows) {
+						writeError(w, http.StatusNotFound, "phone not registered")
+						return
+					}
+				}
+			}
+			if err != nil && detectedRole == "" {
+				if !errors.Is(err, pgx.ErrNoRows) {
+					slog.Error("request otp: auto-detect lookup", "error", err)
+				}
+				writeError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			body.Role = detectedRole
+		}
 		if !isValidRole(body.Role) {
 			writeError(w, http.StatusBadRequest, "role must be 'rider', 'driver', or 'admin'")
 			return
@@ -351,6 +381,36 @@ func VerifyOTP(pool Pool, jwtSecret []byte) http.HandlerFunc {
 		if body.Phone == "" || body.Code == "" {
 			writeError(w, http.StatusBadRequest, "phone and code are required")
 			return
+		}
+		if body.Role == "" {
+			// Auto-detect by checking which table has this phone
+			var detectedRole string
+			var id uuid.UUID
+			err := pool.QueryRow(r.Context(), `SELECT id FROM users WHERE phone = $1`, body.Phone).Scan(&id)
+			if err == nil {
+				detectedRole = "rider"
+			} else if errors.Is(err, pgx.ErrNoRows) {
+				err = pool.QueryRow(r.Context(), `SELECT id FROM drivers WHERE phone = $1`, body.Phone).Scan(&id)
+				if err == nil {
+					detectedRole = "driver"
+				} else if errors.Is(err, pgx.ErrNoRows) {
+					err = pool.QueryRow(r.Context(), `SELECT id FROM admins WHERE phone = $1`, body.Phone).Scan(&id)
+					if err == nil {
+						detectedRole = "admin"
+					} else if errors.Is(err, pgx.ErrNoRows) {
+						writeError(w, http.StatusNotFound, "phone not registered")
+						return
+					}
+				}
+			}
+			if err != nil && detectedRole == "" {
+				if !errors.Is(err, pgx.ErrNoRows) {
+					slog.Error("verify otp: auto-detect lookup", "error", err)
+				}
+				writeError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			body.Role = detectedRole
 		}
 		if !isValidRole(body.Role) {
 			writeError(w, http.StatusBadRequest, "role must be 'rider', 'driver', or 'admin'")
