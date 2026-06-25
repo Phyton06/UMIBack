@@ -10,11 +10,8 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// contextKey es el tipo para claves de contexto a fin de evitar colisiones.
-type contextKey string
-
 // ClaimsKey es la clave para almacenar/recuperar los claims JWT del contexto.
-const ClaimsKey contextKey = "auth:claims"
+const ClaimsKey = "auth:claims"
 
 // Auth retorna un middleware que extrae el token Bearer del header Authorization,
 // valida el JWT con la clave secreta, e inyecta los claims en el contexto.

@@ -86,15 +86,6 @@ func (s RideStatus) CanTransitionTo(target RideStatus) error {
 	}
 }
 
-// ValidTransitions retorna la lista de estados destino válidos
-// desde el estado actual. Retorna nil para estados terminales.
-func (s RideStatus) ValidTransitions() []RideStatus {
-	if s.IsTerminal() {
-		return nil
-	}
-	return transitionMatrix[s]
-}
-
 // CancelableStates retorna los estados desde los cuales se puede
 // cancelar un viaje, derivado de transitionMatrix.
 func CancelableStates() []RideStatus {
