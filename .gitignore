@@ -3,5 +3,14 @@
 !README.md
 !openspec/**
 
+# Entorno local
+.env
+
+# Directorio de la herramienta AI
+.claude/
+
+# Lock de skills
+skills-lock.json
+
 # Binarios de compilación
 /server
