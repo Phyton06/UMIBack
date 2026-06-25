@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/google/uuid"
@@ -281,16 +282,53 @@ func RequestOTP(pool Pool, sender auth.Sender) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "phone is required")
 			return
 		}
+		if body.Role == "" {
+			// Auto-detect by checking which table has this phone
+			var detectedRole string
+			var id uuid.UUID
+			err := pool.QueryRow(r.Context(), `SELECT id FROM users WHERE phone = $1`, body.Phone).Scan(&id)
+			if err == nil {
+				detectedRole = "rider"
+			} else if errors.Is(err, pgx.ErrNoRows) {
+				err = pool.QueryRow(r.Context(), `SELECT id FROM drivers WHERE phone = $1`, body.Phone).Scan(&id)
+				if err == nil {
+					detectedRole = "driver"
+				} else if errors.Is(err, pgx.ErrNoRows) {
+					err = pool.QueryRow(r.Context(), `SELECT id FROM admins WHERE phone = $1`, body.Phone).Scan(&id)
+					if err == nil {
+						detectedRole = "admin"
+					} else if errors.Is(err, pgx.ErrNoRows) {
+						writeError(w, http.StatusNotFound, "phone not registered")
+						return
+					}
+				}
+			}
+			if err != nil && detectedRole == "" {
+				if !errors.Is(err, pgx.ErrNoRows) {
+					slog.Error("request otp: auto-detect lookup", "error", err)
+				}
+				writeError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			body.Role = detectedRole
+		}
 		if !isValidRole(body.Role) {
 			writeError(w, http.StatusBadRequest, "role must be 'rider', 'driver', or 'admin'")
 			return
 		}
 
-		code, err := auth.GenerateOTP(6)
-		if err != nil {
-			slog.Error("request otp: generate", "error", err)
-			writeError(w, http.StatusInternalServerError, "internal error")
-			return
+		devMode := os.Getenv("DEV_MODE") == "true"
+		var code string
+		var err error
+		if devMode {
+			code = "000000"
+		} else {
+			code, err = auth.GenerateOTP(6)
+			if err != nil {
+				slog.Error("request otp: generate", "error", err)
+				writeError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
 		}
 
 		codeHash := auth.HashOTP(code)
@@ -315,7 +353,11 @@ func RequestOTP(pool Pool, sender auth.Sender) http.HandlerFunc {
 			return
 		}
 
-		writeJSON(w, http.StatusOK, map[string]string{"message": "OTP sent"})
+		if devMode {
+			writeJSON(w, http.StatusOK, map[string]string{"message": "OTP sent", "code": code})
+		} else {
+			writeJSON(w, http.StatusOK, map[string]string{"message": "OTP sent"})
+		}
 	}
 }
 
@@ -340,61 +382,98 @@ func VerifyOTP(pool Pool, jwtSecret []byte) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "phone and code are required")
 			return
 		}
+		if body.Role == "" {
+			// Auto-detect by checking which table has this phone
+			var detectedRole string
+			var id uuid.UUID
+			err := pool.QueryRow(r.Context(), `SELECT id FROM users WHERE phone = $1`, body.Phone).Scan(&id)
+			if err == nil {
+				detectedRole = "rider"
+			} else if errors.Is(err, pgx.ErrNoRows) {
+				err = pool.QueryRow(r.Context(), `SELECT id FROM drivers WHERE phone = $1`, body.Phone).Scan(&id)
+				if err == nil {
+					detectedRole = "driver"
+				} else if errors.Is(err, pgx.ErrNoRows) {
+					err = pool.QueryRow(r.Context(), `SELECT id FROM admins WHERE phone = $1`, body.Phone).Scan(&id)
+					if err == nil {
+						detectedRole = "admin"
+					} else if errors.Is(err, pgx.ErrNoRows) {
+						writeError(w, http.StatusNotFound, "phone not registered")
+						return
+					}
+				}
+			}
+			if err != nil && detectedRole == "" {
+				if !errors.Is(err, pgx.ErrNoRows) {
+					slog.Error("verify otp: auto-detect lookup", "error", err)
+				}
+				writeError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			body.Role = detectedRole
+		}
 		if !isValidRole(body.Role) {
 			writeError(w, http.StatusBadRequest, "role must be 'rider', 'driver', or 'admin'")
 			return
 		}
 
-		var storedHash []byte
-		var attempts int16
-		var expiresAt time.Time
-		err := pool.QueryRow(r.Context(),
-			`SELECT code_hash, attempts, expires_at FROM otp_codes WHERE phone = $1 AND role = $2`,
-			body.Phone, body.Role,
-		).Scan(&storedHash, &attempts, &expiresAt)
+		devMode := os.Getenv("DEV_MODE") == "true"
+		var err error
 
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, http.StatusUnauthorized, "invalid code")
-			return
-		}
-		if err != nil {
-			slog.Error("verify otp: select", "error", err)
-			writeError(w, http.StatusInternalServerError, "internal error")
-			return
+		if !(devMode && body.Code == "000000") {
+			var storedHash []byte
+			var attempts int16
+			var expiresAt time.Time
+			err = pool.QueryRow(r.Context(),
+				`SELECT code_hash, attempts, expires_at FROM otp_codes WHERE phone = $1 AND role = $2`,
+				body.Phone, body.Role,
+			).Scan(&storedHash, &attempts, &expiresAt)
+
+			if errors.Is(err, pgx.ErrNoRows) {
+				writeError(w, http.StatusUnauthorized, "invalid code")
+				return
+			}
+			if err != nil {
+				slog.Error("verify otp: select", "error", err)
+				writeError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+
+			if time.Now().After(expiresAt) {
+				writeError(w, http.StatusGone, "code expired")
+				return
+			}
+
+			if attempts >= 3 {
+				writeError(w, http.StatusTooManyRequests, "too many attempts")
+				return
+			}
+
+			inputHash := auth.HashOTP(body.Code)
+			if subtle.ConstantTimeCompare(storedHash, inputHash) != 1 {
+				_, incrErr := pool.Exec(r.Context(),
+					`UPDATE otp_codes SET attempts = attempts + 1 WHERE phone = $1 AND role = $2`,
+					body.Phone, body.Role,
+				)
+				if incrErr != nil {
+					slog.Error("verify otp: increment attempts", "error", incrErr)
+				}
+				writeError(w, http.StatusUnauthorized, "invalid code")
+				return
+			}
 		}
 
-		if time.Now().After(expiresAt) {
-			writeError(w, http.StatusGone, "code expired")
-			return
-		}
-
-		if attempts >= 3 {
-			writeError(w, http.StatusTooManyRequests, "too many attempts")
-			return
-		}
-
-		inputHash := auth.HashOTP(body.Code)
-		if subtle.ConstantTimeCompare(storedHash, inputHash) != 1 {
-			_, err := pool.Exec(r.Context(),
-				`UPDATE otp_codes SET attempts = attempts + 1 WHERE phone = $1 AND role = $2`,
+		// Delete OTP record (skip in dev mode with magic code)
+		if !(devMode && body.Code == "000000") {
+			_, err = pool.Exec(r.Context(),
+				`DELETE FROM otp_codes WHERE phone = $1 AND role = $2`,
 				body.Phone, body.Role,
 			)
 			if err != nil {
-				slog.Error("verify otp: increment attempts", "error", err)
+				slog.Error("verify otp: delete", "error", err)
+				writeError(w, http.StatusInternalServerError, "internal error")
+				return
 			}
-			writeError(w, http.StatusUnauthorized, "invalid code")
-			return
-		}
-
-		// Code matches — delete OTP record
-		_, err = pool.Exec(r.Context(),
-			`DELETE FROM otp_codes WHERE phone = $1 AND role = $2`,
-			body.Phone, body.Role,
-		)
-		if err != nil {
-			slog.Error("verify otp: delete", "error", err)
-			writeError(w, http.StatusInternalServerError, "internal error")
-			return
 		}
 
 		// Look up user by phone to issue JWT for the correct identity.
