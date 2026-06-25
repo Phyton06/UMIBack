@@ -21,7 +21,7 @@ import (
 )
 
 // captureLog redirects slog output to a buffer and returns a function
-// to read the captured output. ponytail: simple buffer over custom Handler.
+// to read the captured output.
 func captureLog() (buf *bytes.Buffer, restore func()) {
 	buf = &bytes.Buffer{}
 	old := slog.Default()
