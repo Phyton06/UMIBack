@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"regexp"
 	"time"
 
 	"github.com/google/uuid"
@@ -282,19 +283,40 @@ func RequestOTP(pool Pool, sender auth.Sender) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "phone is required")
 			return
 		}
+
+		// Normalize phone: strip non-digits, remove +52 prefix if present
+		normalized := regexp.MustCompile(`\D`).ReplaceAllString(body.Phone, "")
+		if len(normalized) == 12 && normalized[:2] == "52" {
+			normalized = normalized[2:]
+		}
+		if len(normalized) != 10 {
+			writeError(w, http.StatusBadRequest, "phone must be 10 digits")
+			return
+		}
+		body.Phone = normalized
+
 		if body.Role == "" {
 			// Auto-detect by checking which table has this phone
 			var detectedRole string
 			var id uuid.UUID
-			err := pool.QueryRow(r.Context(), `SELECT id FROM users WHERE phone = $1`, body.Phone).Scan(&id)
+			err := pool.QueryRow(r.Context(),
+				`SELECT id FROM users WHERE phone = $1 OR phone = $2`,
+				normalized, "+52"+normalized,
+			).Scan(&id)
 			if err == nil {
 				detectedRole = "rider"
 			} else if errors.Is(err, pgx.ErrNoRows) {
-				err = pool.QueryRow(r.Context(), `SELECT id FROM drivers WHERE phone = $1`, body.Phone).Scan(&id)
+				err = pool.QueryRow(r.Context(),
+					`SELECT id FROM drivers WHERE phone = $1 OR phone = $2`,
+					normalized, "+52"+normalized,
+				).Scan(&id)
 				if err == nil {
 					detectedRole = "driver"
 				} else if errors.Is(err, pgx.ErrNoRows) {
-					err = pool.QueryRow(r.Context(), `SELECT id FROM admins WHERE phone = $1`, body.Phone).Scan(&id)
+					err = pool.QueryRow(r.Context(),
+						`SELECT id FROM admins WHERE phone = $1 OR phone = $2`,
+						normalized, "+52"+normalized,
+					).Scan(&id)
 					if err == nil {
 						detectedRole = "admin"
 					} else if errors.Is(err, pgx.ErrNoRows) {
@@ -382,19 +404,40 @@ func VerifyOTP(pool Pool, jwtSecret []byte) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "phone and code are required")
 			return
 		}
+
+		// Normalize phone: strip non-digits, remove +52 prefix if present
+		normalized := regexp.MustCompile(`\D`).ReplaceAllString(body.Phone, "")
+		if len(normalized) == 12 && normalized[:2] == "52" {
+			normalized = normalized[2:]
+		}
+		if len(normalized) != 10 {
+			writeError(w, http.StatusBadRequest, "phone must be 10 digits")
+			return
+		}
+		body.Phone = normalized
+
 		if body.Role == "" {
 			// Auto-detect by checking which table has this phone
 			var detectedRole string
 			var id uuid.UUID
-			err := pool.QueryRow(r.Context(), `SELECT id FROM users WHERE phone = $1`, body.Phone).Scan(&id)
+			err := pool.QueryRow(r.Context(),
+				`SELECT id FROM users WHERE phone = $1 OR phone = $2`,
+				normalized, "+52"+normalized,
+			).Scan(&id)
 			if err == nil {
 				detectedRole = "rider"
 			} else if errors.Is(err, pgx.ErrNoRows) {
-				err = pool.QueryRow(r.Context(), `SELECT id FROM drivers WHERE phone = $1`, body.Phone).Scan(&id)
+				err = pool.QueryRow(r.Context(),
+					`SELECT id FROM drivers WHERE phone = $1 OR phone = $2`,
+					normalized, "+52"+normalized,
+				).Scan(&id)
 				if err == nil {
 					detectedRole = "driver"
 				} else if errors.Is(err, pgx.ErrNoRows) {
-					err = pool.QueryRow(r.Context(), `SELECT id FROM admins WHERE phone = $1`, body.Phone).Scan(&id)
+					err = pool.QueryRow(r.Context(),
+						`SELECT id FROM admins WHERE phone = $1 OR phone = $2`,
+						normalized, "+52"+normalized,
+					).Scan(&id)
 					if err == nil {
 						detectedRole = "admin"
 					} else if errors.Is(err, pgx.ErrNoRows) {
@@ -481,15 +524,18 @@ func VerifyOTP(pool Pool, jwtSecret []byte) http.HandlerFunc {
 		switch body.Role {
 		case "rider":
 			err = pool.QueryRow(r.Context(),
-				`SELECT id FROM users WHERE phone = $1`, body.Phone,
+				`SELECT id FROM users WHERE phone = $1 OR phone = $2`,
+				body.Phone, "+52"+body.Phone,
 			).Scan(&userID)
 		case "driver":
 			err = pool.QueryRow(r.Context(),
-				`SELECT id FROM drivers WHERE phone = $1`, body.Phone,
+				`SELECT id FROM drivers WHERE phone = $1 OR phone = $2`,
+				body.Phone, "+52"+body.Phone,
 			).Scan(&userID)
 		default: // admin
 			err = pool.QueryRow(r.Context(),
-				`SELECT id FROM admins WHERE phone = $1`, body.Phone,
+				`SELECT id FROM admins WHERE phone = $1 OR phone = $2`,
+				body.Phone, "+52"+body.Phone,
 			).Scan(&userID)
 		}
 		if errors.Is(err, pgx.ErrNoRows) {

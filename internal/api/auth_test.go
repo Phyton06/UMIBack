@@ -52,7 +52,7 @@ func TestAuthFullCycle(t *testing.T) {
 	defer mock.Close()
 
 	jwtSecret := []byte("test-secret-1234567890")
-	phone := "+525511111111"
+	phone := "5511111111"
 	name := "Test Rider"
 
 	// ========================================================
@@ -135,7 +135,7 @@ func TestAuthFullCycle(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("DELETE", 1))
 
 	mock.ExpectQuery("SELECT id FROM users").
-		WithArgs(phone).
+		WithArgs(phone, "+52"+phone).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(userID))
 
 	mock.ExpectExec("INSERT INTO refresh_tokens").
@@ -304,10 +304,10 @@ func TestRegisterRider_DuplicatePhone_Returns409(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectQuery("INSERT INTO users").
-		WithArgs("+525511111111", "Dup").
+		WithArgs("5511111111", "Dup").
 		WillReturnError(&pgconn.PgError{Code: "23505"})
 
-	body := mustMarshal(t, map[string]string{"phone": "+525511111111", "name": "Dup"})
+	body := mustMarshal(t, map[string]string{"phone": "5511111111", "name": "Dup"})
 	req := httptest.NewRequest("POST", "/auth/register/rider", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	RegisterRider(mock, []byte("secret"))(w, req)
@@ -330,7 +330,7 @@ func TestRequestOTP_InvalidRole_Returns400(t *testing.T) {
 	}
 	defer mock.Close()
 
-	body := mustMarshal(t, map[string]string{"phone": "+525511111111", "role": "superadmin"})
+	body := mustMarshal(t, map[string]string{"phone": "5511111111", "role": "superadmin"})
 	req := httptest.NewRequest("POST", "/auth/request-otp", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	RequestOTP(mock, auth.MockSender{})(w, req)
@@ -354,11 +354,11 @@ func TestVerifyOTP_ExpiredCode_Returns410(t *testing.T) {
 
 	expired := time.Now().Add(-1 * time.Minute)
 	mock.ExpectQuery("SELECT code_hash, attempts, expires_at").
-		WithArgs("+525511111111", "rider").
+		WithArgs("5511111111", "rider").
 		WillReturnRows(pgxmock.NewRows([]string{"code_hash", "attempts", "expires_at"}).
 			AddRow([]byte("hash"), int16(0), expired))
 
-	body := mustMarshal(t, map[string]string{"phone": "+525511111111", "role": "rider", "code": "123456"})
+	body := mustMarshal(t, map[string]string{"phone": "5511111111", "role": "rider", "code": "123456"})
 	req := httptest.NewRequest("POST", "/auth/verify-otp", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	VerifyOTP(mock, []byte("secret"))(w, req)
@@ -383,11 +383,11 @@ func TestVerifyOTP_MaxAttempts_Returns429(t *testing.T) {
 
 	future := time.Now().Add(5 * time.Minute)
 	mock.ExpectQuery("SELECT code_hash, attempts, expires_at").
-		WithArgs("+525511111111", "rider").
+		WithArgs("5511111111", "rider").
 		WillReturnRows(pgxmock.NewRows([]string{"code_hash", "attempts", "expires_at"}).
 			AddRow([]byte("hash"), int16(3), future))
 
-	body := mustMarshal(t, map[string]string{"phone": "+525511111111", "role": "rider", "code": "123456"})
+	body := mustMarshal(t, map[string]string{"phone": "5511111111", "role": "rider", "code": "123456"})
 	req := httptest.NewRequest("POST", "/auth/verify-otp", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	VerifyOTP(mock, []byte("secret"))(w, req)
@@ -415,14 +415,14 @@ func TestRegisterAdmin_CreatesAdminAndReturnsJWT(t *testing.T) {
 	adminID := uuid.New()
 
 	mock.ExpectQuery("INSERT INTO admins").
-		WithArgs("+525500000001", "Admin Test").
+		WithArgs("5500000001", "Admin Test").
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(adminID))
 
 	mock.ExpectExec("INSERT INTO refresh_tokens").
 		WithArgs(adminID, "admin", pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
-	body := mustMarshal(t, map[string]string{"phone": "+525500000001", "name": "Admin Test"})
+	body := mustMarshal(t, map[string]string{"phone": "5500000001", "name": "Admin Test"})
 	req := httptest.NewRequest("POST", "/auth/register/admin", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	RegisterAdmin(mock, []byte("test-secret"))(w, req)
@@ -460,10 +460,10 @@ func TestRequestOTP_AdminRole_Returns200(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectExec("INSERT INTO otp_codes").
-		WithArgs("+525500000001", "admin", pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs("5500000001", "admin", pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
-	body := mustMarshal(t, map[string]string{"phone": "+525500000001", "role": "admin"})
+	body := mustMarshal(t, map[string]string{"phone": "5500000001", "role": "admin"})
 	req := httptest.NewRequest("POST", "/auth/request-otp", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	RequestOTP(mock, auth.MockSender{})(w, req)
@@ -496,7 +496,7 @@ func TestVerifyOTP_AdminRole_QueriesAdminsTable(t *testing.T) {
 	defer mock.Close()
 
 	adminID := uuid.New()
-	phone := "+525500000001"
+	phone := "5500000001"
 	otpCode := "123456"
 	otpHash := auth.HashOTP(otpCode)
 	future := time.Now().Add(5 * time.Minute)
@@ -511,7 +511,7 @@ func TestVerifyOTP_AdminRole_QueriesAdminsTable(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("DELETE", 1))
 
 	mock.ExpectQuery("SELECT id FROM admins").
-		WithArgs(phone).
+		WithArgs(phone, "+52"+phone).
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(adminID))
 
 	mock.ExpectExec("INSERT INTO refresh_tokens").
@@ -550,10 +550,10 @@ func TestRegisterAdmin_DuplicatePhone_Returns409(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectQuery("INSERT INTO admins").
-		WithArgs("+525500000001", "Dup Admin").
+		WithArgs("5500000001", "Dup Admin").
 		WillReturnError(&pgconn.PgError{Code: "23505"})
 
-	body := mustMarshal(t, map[string]string{"phone": "+525500000001", "name": "Dup Admin"})
+	body := mustMarshal(t, map[string]string{"phone": "5500000001", "name": "Dup Admin"})
 	req := httptest.NewRequest("POST", "/auth/register/admin", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	RegisterAdmin(mock, []byte("secret"))(w, req)
@@ -580,10 +580,10 @@ func TestRequestOTP_InvalidRoleAdminNowValid_Returns200(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectExec("INSERT INTO otp_codes").
-		WithArgs("+525500000001", "admin", pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs("5500000001", "admin", pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
-	body := mustMarshal(t, map[string]string{"phone": "+525500000001", "role": "admin"})
+	body := mustMarshal(t, map[string]string{"phone": "5500000001", "role": "admin"})
 	req := httptest.NewRequest("POST", "/auth/request-otp", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	RequestOTP(mock, auth.MockSender{})(w, req)
