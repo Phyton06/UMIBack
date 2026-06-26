@@ -47,7 +47,7 @@ func main() {
 	}
 
 	jwtSecret := []byte(cfg.JWTSecret)
-	sender := auth.MockSender{}
+	sender := auth.Sender{}
 
 	// two fixed tiers, no per-endpoint config
 	authTier := api.RateLimit(5, time.Minute, api.ClientIP)

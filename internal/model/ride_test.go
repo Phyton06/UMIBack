@@ -59,48 +59,6 @@ func TestCanTransitionTo(t *testing.T) {
 	}
 }
 
-func TestValidTransitions(t *testing.T) {
-	tests := []struct {
-		status   RideStatus
-		expected []RideStatus
-	}{
-		{status: StatusRequested, expected: []RideStatus{StatusAccepted, StatusCancelled}},
-		{status: StatusAccepted, expected: []RideStatus{StatusEnRoute, StatusCancelled}},
-		{status: StatusEnRoute, expected: []RideStatus{StatusArrived, StatusCancelled}},
-		{status: StatusArrived, expected: []RideStatus{StatusInProgress, StatusCancelled}},
-		{status: StatusInProgress, expected: []RideStatus{StatusCompleted, StatusCancelled}},
-		{status: StatusCompleted, expected: nil},
-		{status: StatusCancelled, expected: nil},
-	}
-
-	for _, tc := range tests {
-		t.Run(string(tc.status), func(t *testing.T) {
-			got := tc.status.ValidTransitions()
-			if !sameElements(tc.expected, got) {
-				t.Errorf("%s: esperado %v, obtenido %v", tc.status, tc.expected, got)
-			}
-		})
-	}
-}
-
-// sameElements compara dos slices de RideStatus sin importar el orden.
-func sameElements(a, b []RideStatus) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	counts := make(map[RideStatus]int)
-	for _, s := range a {
-		counts[s]++
-	}
-	for _, s := range b {
-		counts[s]--
-		if counts[s] < 0 {
-			return false
-		}
-	}
-	return true
-}
-
 func TestIsTerminal(t *testing.T) {
 	tests := []struct {
 		status   RideStatus

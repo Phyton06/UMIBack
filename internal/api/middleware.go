@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 )
@@ -20,7 +21,17 @@ func RequireJSON(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusUnsupportedMediaType, "Content-Type must be application/json")
 			return
 		}
-		r.Body = io.NopCloser(io.LimitReader(r.Body, MaxBodySize))
+		// Read body with explicit size limit (returns 413 when exceeded)
+		body, err := io.ReadAll(io.LimitReader(r.Body, MaxBodySize+1))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if len(body) > MaxBodySize {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
 		next(w, r)
 	}
 }

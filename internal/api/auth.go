@@ -75,6 +75,17 @@ func RegisterRider(pool Pool, jwtSecret []byte) http.HandlerFunc {
 			return
 		}
 
+		// Normalize phone: strip non-digits, remove +52 prefix if present
+		normalized := regexp.MustCompile(`\D`).ReplaceAllString(body.Phone, "")
+		if len(normalized) == 12 && normalized[:2] == "52" {
+			normalized = normalized[2:]
+		}
+		if len(normalized) != 10 {
+			writeError(w, http.StatusBadRequest, "phone must be 10 digits")
+			return
+		}
+		body.Phone = normalized
+
 		var userID uuid.UUID
 		err := pool.QueryRow(r.Context(),
 			`INSERT INTO users (phone, name) VALUES ($1, $2) RETURNING id`,
@@ -144,6 +155,17 @@ func RegisterDriver(pool Pool, jwtSecret []byte) http.HandlerFunc {
 			return
 		}
 
+		// Normalize phone: strip non-digits, remove +52 prefix if present
+		normalized := regexp.MustCompile(`\D`).ReplaceAllString(body.Phone, "")
+		if len(normalized) == 12 && normalized[:2] == "52" {
+			normalized = normalized[2:]
+		}
+		if len(normalized) != 10 {
+			writeError(w, http.StatusBadRequest, "phone must be 10 digits")
+			return
+		}
+		body.Phone = normalized
+
 		var driverID uuid.UUID
 		err := pool.QueryRow(r.Context(),
 			`INSERT INTO drivers (phone, name, available) VALUES ($1, $2, false) RETURNING id`,
@@ -212,6 +234,17 @@ func RegisterAdmin(pool Pool, jwtSecret []byte) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "phone and name are required")
 			return
 		}
+
+		// Normalize phone: strip non-digits, remove +52 prefix if present
+		normalized := regexp.MustCompile(`\D`).ReplaceAllString(body.Phone, "")
+		if len(normalized) == 12 && normalized[:2] == "52" {
+			normalized = normalized[2:]
+		}
+		if len(normalized) != 10 {
+			writeError(w, http.StatusBadRequest, "phone must be 10 digits")
+			return
+		}
+		body.Phone = normalized
 
 		var adminID uuid.UUID
 		err := pool.QueryRow(r.Context(),

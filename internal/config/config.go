@@ -16,7 +16,6 @@ type Config struct {
 	JWTSecret     string
 	FareRatePerKm float64
 	FareMinimum   float64
-	DevMode       bool
 }
 
 // NewConfig lee las variables de entorno y retorna una Config validada.
@@ -54,7 +53,6 @@ func NewConfig() (Config, error) {
 		JWTSecret:     jwtSecret,
 		FareRatePerKm: parseFloatEnv("FARE_RATE_PER_KM", 8.0),
 		FareMinimum:   parseFloatEnv("FARE_MINIMUM", 25.0),
-		DevMode:       parseBoolEnv("DEV_MODE", false),
 	}, nil
 }
 
@@ -72,16 +70,3 @@ func parseFloatEnv(key string, defaultVal float64) float64 {
 	return f
 }
 
-// parseBoolEnv parsea un bool desde una variable de entorno.
-// Si la variable está vacía o el valor es inválido, retorna el valor por omisión.
-func parseBoolEnv(key string, defaultVal bool) bool {
-	val := os.Getenv(key)
-	if val == "" {
-		return defaultVal
-	}
-	b, err := strconv.ParseBool(val)
-	if err != nil {
-		return defaultVal
-	}
-	return b
-}
