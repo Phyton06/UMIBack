@@ -30,7 +30,6 @@ resource "aws_cloudfront_distribution" "admin" {
   is_ipv6_enabled     = true
   default_root_object = "index.html"
   price_class         = "PriceClass_100"
-  aliases             = ["admin.${var.domain}"]
 
   origin {
     domain_name              = aws_s3_bucket.admin.bucket_regional_domain_name
@@ -38,9 +37,21 @@ resource "aws_cloudfront_distribution" "admin" {
     origin_access_control_id = aws_cloudfront_origin_access_control.admin.id
   }
 
+  origin {
+    domain_name = aws_lb.main.dns_name
+    origin_id   = "alb-api"
+
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "http-only"
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
+  }
+
   default_cache_behavior {
-    allowed_methods        = ["GET", "HEAD"]
-    cached_methods         = ["GET", "HEAD"]
+    allowed_methods        = ["GET", "HEAD", "OPTIONS"]
+    cached_methods         = ["GET", "HEAD", "OPTIONS"]
     target_origin_id       = "s3-admin"
     compress               = true
     viewer_protocol_policy = "redirect-to-https"
@@ -51,6 +62,81 @@ resource "aws_cloudfront_distribution" "admin" {
     }
   }
 
+  ordered_cache_behavior {
+    path_pattern           = "/auth/*"
+    allowed_methods        = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+    cached_methods         = ["GET", "HEAD", "OPTIONS"]
+    target_origin_id       = "alb-api"
+    compress               = true
+    viewer_protocol_policy = "redirect-to-https"
+
+    forwarded_values {
+      query_string = true
+      headers      = ["Authorization", "Content-Type"]
+      cookies { forward = "all" }
+    }
+  }
+
+  ordered_cache_behavior {
+    path_pattern           = "/admin/*"
+    allowed_methods        = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+    cached_methods         = ["GET", "HEAD", "OPTIONS"]
+    target_origin_id       = "alb-api"
+    compress               = true
+    viewer_protocol_policy = "redirect-to-https"
+
+    forwarded_values {
+      query_string = true
+      headers      = ["Authorization", "Content-Type"]
+      cookies { forward = "all" }
+    }
+  }
+
+  ordered_cache_behavior {
+    path_pattern           = "/rides*"
+    allowed_methods        = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+    cached_methods         = ["GET", "HEAD", "OPTIONS"]
+    target_origin_id       = "alb-api"
+    compress               = true
+    viewer_protocol_policy = "redirect-to-https"
+
+    forwarded_values {
+      query_string = true
+      headers      = ["Authorization", "Content-Type"]
+      cookies { forward = "all" }
+    }
+  }
+
+  ordered_cache_behavior {
+    path_pattern           = "/drivers*"
+    allowed_methods        = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+    cached_methods         = ["GET", "HEAD", "OPTIONS"]
+    target_origin_id       = "alb-api"
+    compress               = true
+    viewer_protocol_policy = "redirect-to-https"
+
+    forwarded_values {
+      query_string = true
+      headers      = ["Authorization", "Content-Type"]
+      cookies { forward = "all" }
+    }
+  }
+
+  ordered_cache_behavior {
+    path_pattern           = "/rider*"
+    allowed_methods        = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+    cached_methods         = ["GET", "HEAD", "OPTIONS"]
+    target_origin_id       = "alb-api"
+    compress               = true
+    viewer_protocol_policy = "redirect-to-https"
+
+    forwarded_values {
+      query_string = true
+      headers      = ["Authorization", "Content-Type"]
+      cookies { forward = "all" }
+    }
+  }
+
   restrictions {
     geo_restriction {
       restriction_type = "none"
@@ -58,8 +144,13 @@ resource "aws_cloudfront_distribution" "admin" {
   }
 
   viewer_certificate {
-    acm_certificate_arn = aws_acm_certificate.api.arn
-    ssl_support_method  = "sni-only"
+    cloudfront_default_certificate = true
+  }
+
+  custom_error_response {
+    error_code         = 403
+    response_code      = 200
+    response_page_path = "/index.html"
   }
 
   tags = {

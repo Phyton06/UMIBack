@@ -7,7 +7,7 @@ terraform {
     }
   }
   backend "s3" {
-    bucket = "umi-terraform-state"
+    bucket = "umi-terraform-state-776051123025"
     key    = "production/terraform.tfstate"
     region = "us-east-1"
   }

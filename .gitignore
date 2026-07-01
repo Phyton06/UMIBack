@@ -16,3 +16,4 @@ skills-lock.json
 
 # Binarios de compilación
 /server
+.terraform/
