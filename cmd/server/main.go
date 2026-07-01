@@ -47,7 +47,15 @@ func main() {
 	}
 
 	jwtSecret := []byte(cfg.JWTSecret)
-	sender := auth.Sender{}
+	var sender auth.Sender = auth.LogSender{}
+	if cfg.SMSProvider == "aws_sns" {
+		snsSender, err := auth.NewAWSSNSSender(context.Background(), cfg.SMSAwsSenderID)
+		if err != nil {
+			slog.Error("error al crear SNS sender, usando mock", "error", err)
+		} else {
+			sender = snsSender
+		}
+	}
 
 	// two fixed tiers, no per-endpoint config
 	authTier := api.RateLimit(5, time.Minute, api.ClientIP)
