@@ -55,6 +55,8 @@ func main() {
 		} else {
 			sender = snsSender
 		}
+	} else if cfg.SMSProvider == "twilio" {
+		sender = auth.NewTwilioSender(cfg.TwilioSID, cfg.TwilioToken, cfg.TwilioPhone)
 	}
 
 	// two fixed tiers, no per-endpoint config

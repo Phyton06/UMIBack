@@ -16,8 +16,11 @@ type Config struct {
 	JWTSecret      string
 	FareRatePerKm  float64
 	FareMinimum    float64
-	SMSProvider    string // "mock" o "aws_sns" (por omisión: "mock")
-	SMSAwsSenderID string // sender ID opcional para AWS SNS
+	SMSProvider     string // "mock", "aws_sns", o "twilio" (por omisión: "mock")
+	SMSAwsSenderID  string // sender ID opcional para AWS SNS
+	TwilioSID       string // Twilio Account SID
+	TwilioToken     string // Twilio Auth Token
+	TwilioPhone     string // Twilio phone number (from)
 }
 
 // NewConfig lee las variables de entorno y retorna una Config validada.
@@ -57,6 +60,9 @@ func NewConfig() (Config, error) {
 		FareMinimum:    parseFloatEnv("FARE_MINIMUM", 25.0),
 		SMSProvider:    getEnv("SMS_PROVIDER", "mock"),
 		SMSAwsSenderID: os.Getenv("SMS_SENDER_ID"),
+		TwilioSID:     os.Getenv("TWILIO_ACCOUNT_SID"),
+		TwilioToken:   os.Getenv("TWILIO_AUTH_TOKEN"),
+		TwilioPhone:   os.Getenv("TWILIO_PHONE_NUMBER"),
 	}, nil
 }
 

@@ -2,9 +2,14 @@ package auth
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/url"
 	"regexp"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -23,6 +28,60 @@ type LogSender struct{}
 
 func (LogSender) Send(phone, code string) error {
 	slog.Info("mock SMS", "phone", phone, "code", code)
+	return nil
+}
+
+// TwilioSender envía códigos OTP mediante la API REST de Twilio.
+type TwilioSender struct {
+	accountSID  string
+	authToken   string
+	phoneNumber string
+	client      *http.Client
+}
+
+// NewTwilioSender crea un sender respaldado por Twilio.
+func NewTwilioSender(accountSID, authToken, phoneNumber string) *TwilioSender {
+	return &TwilioSender{
+		accountSID:  accountSID,
+		authToken:   authToken,
+		phoneNumber: phoneNumber,
+		client:      &http.Client{},
+	}
+}
+
+// Send envía un SMS vía Twilio con el código de verificación.
+func (s *TwilioSender) Send(phone, code string) error {
+	e164, err := normalizeToE164(phone)
+	if err != nil {
+		return err
+	}
+
+	apiURL := fmt.Sprintf("https://api.twilio.com/2010-04-01/Accounts/%s/Messages.json", s.accountSID)
+	data := url.Values{}
+	data.Set("To", e164)
+	data.Set("From", s.phoneNumber)
+	data.Set("Body", "Tu codigo de verificacion UMI: "+code)
+
+	req, err := http.NewRequest("POST", apiURL, strings.NewReader(data.Encode()))
+	if err != nil {
+		return fmt.Errorf("twilio request: %w", err)
+	}
+	auth := base64.StdEncoding.EncodeToString([]byte(s.accountSID + ":" + s.authToken))
+	req.Header.Set("Authorization", "Basic "+auth)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("twilio send: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("twilio error %d: %s", resp.StatusCode, string(body))
+	}
+
+	slog.Info("SMS sent via Twilio", "phone", e164[:6]+"***")
 	return nil
 }
 
