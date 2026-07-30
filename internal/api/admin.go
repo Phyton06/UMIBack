@@ -154,29 +154,58 @@ func ListDrivers(pool Pool) http.HandlerFunc {
 
 // ListPassengers retorna una lista paginada de pasajeros (users).
 //
-// Request:  GET /admin/passengers?limit=N&offset=N
+// Request:  GET /admin/passengers?limit=N&offset=N&search=&status=all|active|suspended
 // Response: 200 {passengers: [...], total: N}
 // Errors:   400 si los parámetros son inválidos
+// ponytail: single SQL path with parametrized WHERE clauses, no query builder
 func ListPassengers(pool Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		limit := parseIntQuery(r.URL.Query().Get("limit"), 20)
 		offset := parseIntQuery(r.URL.Query().Get("offset"), 0)
+		search := r.URL.Query().Get("search")
+		status := r.URL.Query().Get("status")
+		if status == "" {
+			status = "all"
+		}
 
-		// Total count
+		switch status {
+		case "all", "active", "suspended":
+			// valid
+		default:
+			writeError(w, http.StatusBadRequest, "status must be 'all', 'active', or 'suspended'")
+			return
+		}
+
+		// Build status WHERE clause substring (parametrized, no string concat of values).
+		statusWhere := ""
+		switch status {
+		case "active":
+			statusWhere = "AND (u.suspended_until IS NULL OR u.suspended_until <= now())"
+		case "suspended":
+			statusWhere = "AND u.suspended_until > now()"
+		}
+
+		// Total count — no JOIN needed, just filter on users.
 		var total int
-		err := pool.QueryRow(r.Context(),
-			`SELECT COUNT(*) FROM users`,
-		).Scan(&total)
+		countSQL := `SELECT COUNT(*) FROM users u
+			WHERE ($1 = '' OR u.name ILIKE '%'||$1||'%' OR u.email ILIKE '%'||$1||'%' OR u.phone ILIKE '%'||$1||'%')
+			` + statusWhere
+		err := pool.QueryRow(r.Context(), countSQL, search).Scan(&total)
 		if err != nil {
 			slog.Error("list passengers: count", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 
-		rows, err := pool.Query(r.Context(),
-			`SELECT id, phone, name, suspended_until, created_at FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
-			limit, offset,
-		)
+		listSQL := `SELECT u.id, u.phone, u.name, u.email, u.rating, u.suspended_until, u.created_at,
+				COUNT(r.id)::int AS trips
+			FROM users u LEFT JOIN rides r ON r.passenger_id = u.id
+			WHERE ($1 = '' OR u.name ILIKE '%'||$1||'%' OR u.email ILIKE '%'||$1||'%' OR u.phone ILIKE '%'||$1||'%')
+			` + statusWhere + `
+			GROUP BY u.id
+			ORDER BY u.created_at DESC LIMIT $2 OFFSET $3`
+
+		rows, err := pool.Query(r.Context(), listSQL, search, limit, offset)
 		if err != nil {
 			slog.Error("list passengers: query", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal error")
@@ -185,20 +214,26 @@ func ListPassengers(pool Pool) http.HandlerFunc {
 		defer rows.Close()
 
 		type passengerRow struct {
-			ID             string    `json:"id"`
-			Phone          string    `json:"phone"`
-			Name           string    `json:"name"`
+			ID             string     `json:"id"`
+			Phone          string     `json:"phone"`
+			Name           string     `json:"name"`
+			Email          *string    `json:"email"`
+			Rating         float64    `json:"rating"`
+			Trips          int        `json:"trips"`
 			SuspendedUntil *time.Time `json:"suspended_until"`
-			CreatedAt      time.Time `json:"created_at"`
+			CreatedAt      time.Time  `json:"created_at"`
 		}
 
 		passengers := make([]passengerRow, 0)
 		for rows.Next() {
 			var id uuid.UUID
 			var phone, name string
+			var email *string
+			var rating float64
 			var suspendedUntil *time.Time
 			var createdAt time.Time
-			if err := rows.Scan(&id, &phone, &name, &suspendedUntil, &createdAt); err != nil {
+			var trips int
+			if err := rows.Scan(&id, &phone, &name, &email, &rating, &suspendedUntil, &createdAt, &trips); err != nil {
 				slog.Error("list passengers: scan", "error", err)
 				writeError(w, http.StatusInternalServerError, "internal error")
 				return
@@ -207,6 +242,9 @@ func ListPassengers(pool Pool) http.HandlerFunc {
 				ID:             id.String(),
 				Phone:          phone,
 				Name:           name,
+				Email:          email,
+				Rating:         rating,
+				Trips:          trips,
 				SuspendedUntil: suspendedUntil,
 				CreatedAt:      createdAt,
 			})
@@ -347,6 +385,93 @@ func UnsuspendPassenger(pool Pool) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"message": "passenger unsuspended"})
+	}
+}
+
+// PassengerStats retorna estadísticas agregadas de pasajeros.
+//
+// Request:  GET /admin/passengers/stats
+// Response: 200 {total, banned, avg_rating}
+func PassengerStats(pool Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var total, banned int
+		var avgRating float64
+		err := pool.QueryRow(r.Context(),
+			`SELECT
+				COUNT(*) AS total,
+				COUNT(*) FILTER (WHERE suspended_until > now()) AS banned,
+				COALESCE(AVG(rating), 0) AS avg_rating
+			FROM users`,
+		).Scan(&total, &banned, &avgRating)
+		if err != nil {
+			slog.Error("passenger stats: query", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"total":      total,
+			"banned":     banned,
+			"avg_rating": avgRating,
+		})
+	}
+}
+
+// BanPassenger suspende un pasajero por una duración determinada.
+//
+// Request:  PATCH /admin/passengers/{id}/ban  {duration, unit}
+// Response: 200 {suspended_until}
+// Errors:   400 si unidad inválida, 404 si no se encuentra el pasajero
+// ponytail: follows SetMembership pattern — same unit validation, same interval logic
+func BanPassenger(pool Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid passenger id")
+			return
+		}
+
+		var body struct {
+			Duration int    `json:"duration"`
+			Unit     string `json:"unit"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if body.Duration <= 0 {
+			writeError(w, http.StatusBadRequest, "duration must be a positive integer")
+			return
+		}
+
+		switch body.Unit {
+		case "day", "week", "month", "year":
+			// valid
+		default:
+			writeError(w, http.StatusBadRequest, "unit must be 'day', 'week', 'month', or 'year'")
+			return
+		}
+
+		interval := fmt.Sprintf("%d %s", body.Duration, body.Unit)
+		var suspendedUntil time.Time
+		err = pool.QueryRow(r.Context(),
+			`UPDATE users SET suspended_until = now() + $1::interval, updated_at = now()
+			 WHERE id = $2 RETURNING suspended_until`,
+			interval, userID,
+		).Scan(&suspendedUntil)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "passenger not found")
+			return
+		}
+		if err != nil {
+			slog.Error("ban passenger: update", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"suspended_until": suspendedUntil,
+		})
 	}
 }
 

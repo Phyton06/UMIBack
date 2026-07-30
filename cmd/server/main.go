@@ -102,6 +102,8 @@ func main() {
 	mux.Handle("PATCH /admin/passengers/{id}/suspend", adminChain(http.HandlerFunc(api.SuspendPassenger(pool))))
 	mux.Handle("PATCH /admin/passengers/{id}/unsuspend", adminChain(http.HandlerFunc(api.UnsuspendPassenger(pool))))
 	mux.Handle("PATCH /admin/drivers/{id}/membership", adminChain(http.HandlerFunc(api.SetMembership(pool))))
+	mux.Handle("GET /admin/passengers/stats", adminChain(http.HandlerFunc(api.PassengerStats(pool))))
+	mux.Handle("PATCH /admin/passengers/{id}/ban", adminChain(http.HandlerFunc(api.BanPassenger(pool))))
 
 	// Sweep stale rate-limit entries every 5 minutes
 	api.StartRateLimitSweeper(context.Background(), 5*time.Minute)

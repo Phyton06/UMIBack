@@ -275,13 +275,14 @@ func TestListPassengers_Returns200WithPassengersAndTotal(t *testing.T) {
 	now := time.Now()
 	userID := uuid.New()
 
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM users").
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM users u").
+		WithArgs("").
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(int(1)))
 
-	mock.ExpectQuery("SELECT id, phone, name, suspended_until, created_at FROM users ORDER BY created_at DESC").
-		WithArgs(20, 0).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "phone", "name", "suspended_until", "created_at"}).
-			AddRow(userID, "5511111111", "Passenger1", nil, now))
+	mock.ExpectQuery("SELECT u.id, u.phone, u.name, u.email, u.rating, u.suspended_until, u.created_at,\n\t\t\t\tCOUNT\\(r.id\\)::int AS trips").
+		WithArgs("", 20, 0).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "phone", "name", "email", "rating", "suspended_until", "created_at", "trips"}).
+			AddRow(userID, "5511111111", "Passenger1", "a@b.com", 4.5, nil, now, 3))
 
 	req := httptest.NewRequest("GET", "/admin/passengers?limit=20&offset=0", nil)
 	w := httptest.NewRecorder()
@@ -307,6 +308,18 @@ func TestListPassengers_Returns200WithPassengersAndTotal(t *testing.T) {
 		t.Fatalf("passengers length=%d, esperado 1", len(passengers))
 	}
 
+	// Verify new fields are present on the first passenger
+	p := passengers[0].(map[string]any)
+	if p["email"] != "a@b.com" {
+		t.Fatalf("email=%v, esperado a@b.com", p["email"])
+	}
+	if p["rating"] != 4.5 {
+		t.Fatalf("rating=%v, esperado 4.5", p["rating"])
+	}
+	if trips, _ := p["trips"].(float64); trips != 3 {
+		t.Fatalf("trips=%v, esperado 3", p["trips"])
+	}
+
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
 	}
@@ -319,12 +332,13 @@ func TestListPassengers_EmptyList_Returns200(t *testing.T) {
 	}
 	defer mock.Close()
 
-	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM users").
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM users u").
+		WithArgs("").
 		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(int(0)))
 
-	mock.ExpectQuery("SELECT id, phone, name, suspended_until, created_at FROM users ORDER BY created_at DESC").
-		WithArgs(20, 0).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "phone", "name", "suspended_until", "created_at"}))
+	mock.ExpectQuery("SELECT u.id, u.phone, u.name, u.email, u.rating, u.suspended_until, u.created_at,\n\t\t\t\tCOUNT\\(r.id\\)::int AS trips").
+		WithArgs("", 20, 0).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "phone", "name", "email", "rating", "suspended_until", "created_at", "trips"}))
 
 	req := httptest.NewRequest("GET", "/admin/passengers", nil)
 	w := httptest.NewRecorder()
@@ -344,6 +358,291 @@ func TestListPassengers_EmptyList_Returns200(t *testing.T) {
 	if !ok || int(total) != 0 {
 		t.Fatalf("total=%v, esperado 0", result["total"])
 	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestListPassengers_StatusFilterSuspended_ReturnsFiltered(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	now := time.Now()
+	future := now.Add(24 * time.Hour)
+	userID := uuid.New()
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM users u").
+		WithArgs("").
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(int(1)))
+
+	mock.ExpectQuery("SELECT u.id, u.phone, u.name, u.email, u.rating, u.suspended_until, u.created_at,\n\t\t\t\tCOUNT\\(r.id\\)::int AS trips").
+		WithArgs("", 20, 0).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "phone", "name", "email", "rating", "suspended_until", "created_at", "trips"}).
+			AddRow(userID, "5511111111", "Suspended", "s@b.com", 2.0, &future, now, 0))
+
+	req := httptest.NewRequest("GET", "/admin/passengers?status=suspended", nil)
+	w := httptest.NewRecorder()
+	ListPassengers(mock)(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, esperado 200", resp.StatusCode)
+	}
+	var result map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("json decode: %v", err)
+	}
+	resp.Body.Close()
+
+	total, ok := result["total"].(float64)
+	if !ok || int(total) != 1 {
+		t.Fatalf("total=%v, esperado 1", result["total"])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestListPassengers_SearchFilter_ReturnsFiltered(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	now := time.Now()
+	userID := uuid.New()
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM users u").
+		WithArgs("maria").
+		WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(int(1)))
+
+	mock.ExpectQuery("SELECT u.id, u.phone, u.name, u.email, u.rating, u.suspended_until, u.created_at,\n\t\t\t\tCOUNT\\(r.id\\)::int AS trips").
+		WithArgs("maria", 20, 0).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "phone", "name", "email", "rating", "suspended_until", "created_at", "trips"}).
+			AddRow(userID, "5511111111", "Maria", "maria@b.com", 5.0, nil, now, 5))
+
+	req := httptest.NewRequest("GET", "/admin/passengers?search=maria", nil)
+	w := httptest.NewRecorder()
+	ListPassengers(mock)(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, esperado 200", resp.StatusCode)
+	}
+	var result map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("json decode: %v", err)
+	}
+	resp.Body.Close()
+
+	total, ok := result["total"].(float64)
+	if !ok || int(total) != 1 {
+		t.Fatalf("total=%v, esperado 1", result["total"])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestListPassengers_InvalidStatus_Returns400(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	req := httptest.NewRequest("GET", "/admin/passengers?status=invalid", nil)
+	w := httptest.NewRecorder()
+	ListPassengers(mock)(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d, esperado 400", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+// --- PassengerStats ---
+
+func TestPassengerStats_Happy_Returns200(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectQuery("SELECT").
+		WillReturnRows(pgxmock.NewRows([]string{"total", "banned", "avg_rating"}).
+			AddRow(int(4), int(1), float64(4.2)))
+
+	req := httptest.NewRequest("GET", "/admin/passengers/stats", nil)
+	w := httptest.NewRecorder()
+	PassengerStats(mock)(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, esperado 200", resp.StatusCode)
+	}
+	var result map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("json decode: %v", err)
+	}
+	resp.Body.Close()
+
+	if total, _ := result["total"].(float64); int(total) != 4 {
+		t.Fatalf("total=%v, esperado 4", total)
+	}
+	if banned, _ := result["banned"].(float64); int(banned) != 1 {
+		t.Fatalf("banned=%v, esperado 1", banned)
+	}
+	if avg, _ := result["avg_rating"].(float64); avg != 4.2 {
+		t.Fatalf("avg_rating=%v, esperado 4.2", avg)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestPassengerStats_EmptyDB_ReturnsZeros(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectQuery("SELECT").
+		WillReturnRows(pgxmock.NewRows([]string{"total", "banned", "avg_rating"}).
+			AddRow(int(0), int(0), float64(0)))
+
+	req := httptest.NewRequest("GET", "/admin/passengers/stats", nil)
+	w := httptest.NewRecorder()
+	PassengerStats(mock)(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d, esperado 200", resp.StatusCode)
+	}
+	var result map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("json decode: %v", err)
+	}
+	resp.Body.Close()
+
+	if total, _ := result["total"].(float64); int(total) != 0 {
+		t.Fatalf("total=%v, esperado 0", total)
+	}
+	if banned, _ := result["banned"].(float64); int(banned) != 0 {
+		t.Fatalf("banned=%v, esperado 0", banned)
+	}
+	if avg, _ := result["avg_rating"].(float64); avg != 0 {
+		t.Fatalf("avg_rating=%v, esperado 0", avg)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// --- BanPassenger ---
+
+func TestBanPassenger_AllUnits_Returns200(t *testing.T) {
+	units := []string{"day", "week", "month", "year"}
+	for _, unit := range units {
+		t.Run(unit, func(t *testing.T) {
+			mock, err := pgxmock.NewPool()
+			if err != nil {
+				t.Fatalf("pgxmock.NewPool() error: %v", err)
+			}
+			defer mock.Close()
+
+			userID := uuid.New()
+			interval := "1 " + unit
+			expectedTime := time.Now().Add(24 * time.Hour)
+
+			mock.ExpectQuery("UPDATE users SET suspended_until").
+				WithArgs(interval, userID).
+				WillReturnRows(pgxmock.NewRows([]string{"suspended_until"}).AddRow(expectedTime))
+
+			body := mustMarshal(t, map[string]any{"duration": 1, "unit": unit})
+			req := httptest.NewRequest("PATCH", "/admin/passengers/"+userID.String()+"/ban", bytes.NewReader(body))
+			req.SetPathValue("id", userID.String())
+			w := httptest.NewRecorder()
+			BanPassenger(mock)(w, req)
+
+			resp := w.Result()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("[%s] status=%d, esperado 200", unit, resp.StatusCode)
+			}
+			var result map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+				t.Fatalf("json decode: %v", err)
+			}
+			resp.Body.Close()
+
+			if result["suspended_until"] == nil {
+				t.Fatalf("[%s] suspended_until is nil", unit)
+			}
+
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("unmet expectations: %v", err)
+			}
+		})
+	}
+}
+
+func TestBanPassenger_InvalidUnit_Returns400(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	userID := uuid.New()
+	body := mustMarshal(t, map[string]any{"duration": 1, "unit": "decade"})
+	req := httptest.NewRequest("PATCH", "/admin/passengers/"+userID.String()+"/ban", bytes.NewReader(body))
+	req.SetPathValue("id", userID.String())
+	w := httptest.NewRecorder()
+	BanPassenger(mock)(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d, esperado 400", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestBanPassenger_NotFound_Returns404(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool() error: %v", err)
+	}
+	defer mock.Close()
+
+	userID := uuid.New()
+
+	mock.ExpectQuery("UPDATE users SET suspended_until").
+		WithArgs("1 day", userID).
+		WillReturnError(pgx.ErrNoRows)
+
+	body := mustMarshal(t, map[string]any{"duration": 1, "unit": "day"})
+	req := httptest.NewRequest("PATCH", "/admin/passengers/"+userID.String()+"/ban", bytes.NewReader(body))
+	req.SetPathValue("id", userID.String())
+	w := httptest.NewRecorder()
+	BanPassenger(mock)(w, req)
+
+	resp := w.Result()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status=%d, esperado 404", resp.StatusCode)
+	}
+	resp.Body.Close()
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
