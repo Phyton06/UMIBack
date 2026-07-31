@@ -620,3 +620,45 @@ func BanHistory(pool Pool) http.HandlerFunc {
 		})
 	}
 }
+
+// PassengerLastRide retorna el último viaje completado de un pasajero.
+//
+// Request:  GET /admin/passengers/{id}/last-ride
+// Response: 200 {id, status, pickup_address, dropoff_address, fare, completed_at, driver_name} | 404
+func PassengerLastRide(pool Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid passenger id")
+			return
+		}
+
+		type lastRide struct {
+			ID            string  `json:"id"`
+			Status        string  `json:"status"`
+			PickupAddr    string  `json:"pickup_address"`
+			DropoffAddr   *string `json:"dropoff_address"`
+			Fare          float64 `json:"fare"`
+			CompletedAt   *time.Time `json:"completed_at"`
+		}
+
+		var ride lastRide
+		err = pool.QueryRow(r.Context(),
+			`SELECT id, status, pickup_address, dropoff_address, COALESCE(fare, 0), completed_at
+			 FROM rides WHERE passenger_id = $1 AND status = 'COMPLETED'
+			 ORDER BY completed_at DESC LIMIT 1`,
+			userID,
+		).Scan(&ride.ID, &ride.Status, &ride.PickupAddr, &ride.DropoffAddr, &ride.Fare, &ride.CompletedAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSON(w, http.StatusOK, map[string]any{"ride": nil})
+			return
+		}
+		if err != nil {
+			slog.Error("passenger last ride: query", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{"ride": ride})
+	}
+}
