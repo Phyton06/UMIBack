@@ -197,7 +197,7 @@ func ListPassengers(pool Pool) http.HandlerFunc {
 			return
 		}
 
-		listSQL := `SELECT u.id, u.phone, u.name, u.email, u.rating, u.suspended_until, u.created_at,
+		listSQL := `SELECT u.id, u.phone, u.name, u.email, u.rating, u.suspended_until, u.suspension_reason, u.created_at,
 				COUNT(r.id)::int AS trips
 			FROM users u LEFT JOIN rides r ON r.passenger_id = u.id
 			WHERE ($1 = '' OR u.name ILIKE '%'||$1||'%' OR u.email ILIKE '%'||$1||'%' OR u.phone ILIKE '%'||$1||'%')
@@ -214,14 +214,15 @@ func ListPassengers(pool Pool) http.HandlerFunc {
 		defer rows.Close()
 
 		type passengerRow struct {
-			ID             string     `json:"id"`
-			Phone          string     `json:"phone"`
-			Name           string     `json:"name"`
-			Email          *string    `json:"email"`
-			Rating         float64    `json:"rating"`
-			Trips          int        `json:"trips"`
-			SuspendedUntil *time.Time `json:"suspended_until"`
-			CreatedAt      time.Time  `json:"created_at"`
+			ID               string     `json:"id"`
+			Phone            string     `json:"phone"`
+			Name             string     `json:"name"`
+			Email            *string    `json:"email"`
+			Rating           float64    `json:"rating"`
+			Trips            int        `json:"trips"`
+			SuspendedUntil   *time.Time `json:"suspended_until"`
+			SuspensionReason *string    `json:"suspension_reason"`
+			CreatedAt        time.Time  `json:"created_at"`
 		}
 
 		passengers := make([]passengerRow, 0)
@@ -231,22 +232,24 @@ func ListPassengers(pool Pool) http.HandlerFunc {
 			var email *string
 			var rating float64
 			var suspendedUntil *time.Time
+			var suspensionReason *string
 			var createdAt time.Time
 			var trips int
-			if err := rows.Scan(&id, &phone, &name, &email, &rating, &suspendedUntil, &createdAt, &trips); err != nil {
+			if err := rows.Scan(&id, &phone, &name, &email, &rating, &suspendedUntil, &suspensionReason, &createdAt, &trips); err != nil {
 				slog.Error("list passengers: scan", "error", err)
 				writeError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 			passengers = append(passengers, passengerRow{
-				ID:             id.String(),
-				Phone:          phone,
-				Name:           name,
-				Email:          email,
-				Rating:         rating,
-				Trips:          trips,
-				SuspendedUntil: suspendedUntil,
-				CreatedAt:      createdAt,
+				ID:               id.String(),
+				Phone:            phone,
+				Name:             name,
+				Email:            email,
+				Rating:           rating,
+				Trips:            trips,
+				SuspendedUntil:   suspendedUntil,
+				SuspensionReason: suspensionReason,
+				CreatedAt:        createdAt,
 			})
 		}
 		if rows.Err() != nil {
@@ -384,6 +387,19 @@ func UnsuspendPassenger(pool Pool) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, "passenger not found")
 			return
 		}
+
+		// Mark latest suspension history as unsuspended
+		_, err = pool.Exec(r.Context(),
+			`UPDATE suspension_history SET unsuspended_at = now()
+			 WHERE user_id = $1 AND unsuspended_at IS NULL
+			 AND suspended_until = (SELECT MAX(suspended_until) FROM suspension_history WHERE user_id = $1 AND unsuspended_at IS NULL)`,
+			userID,
+		)
+		if err != nil {
+			slog.Error("unsuspend passenger: update history", "error", err)
+			// non-fatal
+		}
+
 		writeJSON(w, http.StatusOK, map[string]string{"message": "passenger unsuspended"})
 	}
 }
@@ -434,6 +450,7 @@ func BanPassenger(pool Pool) http.HandlerFunc {
 		var body struct {
 			Duration int    `json:"duration"`
 			Unit     string `json:"unit"`
+			Reason   string `json:"reason"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid request body")
@@ -455,9 +472,9 @@ func BanPassenger(pool Pool) http.HandlerFunc {
 		interval := fmt.Sprintf("%d %s", body.Duration, body.Unit)
 		var suspendedUntil time.Time
 		err = pool.QueryRow(r.Context(),
-			`UPDATE users SET suspended_until = now() + $1::interval, updated_at = now()
-			 WHERE id = $2 RETURNING suspended_until`,
-			interval, userID,
+			`UPDATE users SET suspended_until = now() + $1::interval, suspension_reason = $2, updated_at = now()
+			 WHERE id = $3 RETURNING suspended_until`,
+			interval, body.Reason, userID,
 		).Scan(&suspendedUntil)
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "passenger not found")
@@ -467,6 +484,16 @@ func BanPassenger(pool Pool) http.HandlerFunc {
 			slog.Error("ban passenger: update", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
+		}
+
+		// Insert ban history record
+		_, err = pool.Exec(r.Context(),
+			`INSERT INTO suspension_history (user_id, suspended_until, reason) VALUES ($1, $2, $3)`,
+			userID, suspendedUntil, body.Reason,
+		)
+		if err != nil {
+			slog.Error("ban passenger: insert history", "error", err)
+			// non-fatal — ban succeeded, history is ancillary
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -542,4 +569,54 @@ func parseIntQuery(s string, defaultVal int) int {
 		return defaultVal
 	}
 	return v
+}
+
+// BanHistory retorna el historial de suspensiones de un pasajero.
+//
+// Request:  GET /admin/passengers/{id}/ban-history
+// Response: 200 [{suspended_at, suspended_until, reason, unsuspended_at, duration_label}]
+// Errors:   404 si no se encuentra el pasajero
+func BanHistory(pool Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid passenger id")
+			return
+		}
+
+		rows, err := pool.Query(r.Context(),
+			`SELECT suspended_at, suspended_until, COALESCE(reason, ''), unsuspended_at
+			 FROM suspension_history WHERE user_id = $1
+			 ORDER BY suspended_at DESC`,
+			userID,
+		)
+		if err != nil {
+			slog.Error("ban history: query", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		defer rows.Close()
+
+		type historyEntry struct {
+			SuspendedAt    time.Time  `json:"suspended_at"`
+			SuspendedUntil time.Time  `json:"suspended_until"`
+			Reason         string     `json:"reason"`
+			UnsuspendedAt  *time.Time `json:"unsuspended_at"`
+		}
+
+		history := make([]historyEntry, 0)
+		for rows.Next() {
+			var e historyEntry
+			if err := rows.Scan(&e.SuspendedAt, &e.SuspendedUntil, &e.Reason, &e.UnsuspendedAt); err != nil {
+				slog.Error("ban history: scan", "error", err)
+				writeError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			history = append(history, e)
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"history": history,
+		})
+	}
 }
