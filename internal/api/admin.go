@@ -662,3 +662,128 @@ func PassengerLastRide(pool Pool) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, map[string]any{"ride": ride})
 	}
 }
+
+// GetPassenger retorna un pasajero por UUID.
+//
+// Request:  GET /admin/passengers/{id}
+// Response: 200 {id, phone, name, email, rating, trips, suspended_until, suspension_reason, created_at}
+// Errors:   400 si el UUID es inválido, 404 si no se encuentra
+func GetPassenger(pool Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid passenger id")
+			return
+		}
+
+		type passengerRow struct {
+			ID               string     `json:"id"`
+			Phone            string     `json:"phone"`
+			Name             string     `json:"name"`
+			Email            *string    `json:"email"`
+			Rating           float64    `json:"rating"`
+			Trips            int        `json:"trips"`
+			SuspendedUntil   *time.Time `json:"suspended_until"`
+			SuspensionReason *string    `json:"suspension_reason"`
+			CreatedAt        time.Time  `json:"created_at"`
+		}
+
+		var p passengerRow
+		err = pool.QueryRow(r.Context(),
+			`SELECT u.id, u.phone, u.name, u.email, u.rating, u.suspended_until, u.suspension_reason, u.created_at,
+					COUNT(r.id)::int AS trips
+			 FROM users u LEFT JOIN rides r ON r.passenger_id = u.id
+			 WHERE u.id = $1
+			 GROUP BY u.id`,
+			userID,
+		).Scan(&p.ID, &p.Phone, &p.Name, &p.Email, &p.Rating, &p.SuspendedUntil, &p.SuspensionReason, &p.CreatedAt, &p.Trips)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "passenger not found")
+			return
+		}
+		if err != nil {
+			slog.Error("get passenger: query", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, p)
+	}
+}
+
+// GetDriver retorna un conductor por UUID.
+//
+// Request:  GET /admin/drivers/{id}
+// Response: 200 {id, phone, name, available, membresia_active_until, suspended_until, created_at}
+// Errors:   400 si el UUID es inválido, 404 si no se encuentra
+func GetDriver(pool Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		driverID, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid driver id")
+			return
+		}
+
+		type driverRow struct {
+			ID                   string     `json:"id"`
+			Phone                string     `json:"phone"`
+			Name                 string     `json:"name"`
+			Available            bool       `json:"available"`
+			MembresiaActiveUntil *time.Time `json:"membresia_active_until"`
+			SuspendedUntil       *time.Time `json:"suspended_until"`
+			CreatedAt            time.Time  `json:"created_at"`
+		}
+
+		var d driverRow
+		err = pool.QueryRow(r.Context(),
+			`SELECT id, phone, name, available, membresia_active_until, suspended_until, created_at
+			 FROM drivers WHERE id = $1`,
+			driverID,
+		).Scan(&d.ID, &d.Phone, &d.Name, &d.Available, &d.MembresiaActiveUntil, &d.SuspendedUntil, &d.CreatedAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "driver not found")
+			return
+		}
+		if err != nil {
+			slog.Error("get driver: query", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, d)
+	}
+}
+
+// DashboardStats retorna métricas agregadas para el dashboard admin.
+//
+// Request:  GET /admin/dashboard/stats
+// Response: 200 {total_drivers, active_drivers, pending_rides, rides_today, revenue_today}
+// Errors:   500 si la consulta falla
+func DashboardStats(pool Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var totalDrivers, activeDrivers, pendingRides, ridesToday int
+		var revenueToday float64
+		err := pool.QueryRow(r.Context(),
+			`SELECT
+				COUNT(*) AS total_drivers,
+				COUNT(*) FILTER (WHERE available AND location IS NOT NULL) AS active_drivers,
+				(SELECT COUNT(*) FROM rides WHERE status = 'REQUESTED') AS pending_rides,
+				(SELECT COUNT(*) FROM rides WHERE status = 'COMPLETED' AND completed_at::date = CURRENT_DATE) AS rides_today,
+				(SELECT COALESCE(SUM(fare), 0) FROM rides WHERE status = 'COMPLETED' AND completed_at::date = CURRENT_DATE) AS revenue_today
+			FROM drivers`,
+		).Scan(&totalDrivers, &activeDrivers, &pendingRides, &ridesToday, &revenueToday)
+		if err != nil {
+			slog.Error("dashboard stats: query", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"total_drivers":  totalDrivers,
+			"active_drivers": activeDrivers,
+			"pending_rides":  pendingRides,
+			"rides_today":    ridesToday,
+			"revenue_today":  revenueToday,
+		})
+	}
+}
