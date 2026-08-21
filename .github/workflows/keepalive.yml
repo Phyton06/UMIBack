@@ -1,0 +1,13 @@
+name: Keepalive Cron
+
+on:
+  schedule:
+    - cron: '0 8 * * 1,5'
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping backend health endpoint
+        run: |
+          curl -f -s -o /dev/null https://api.umi.app/health && echo "OK" || echo "FAIL"

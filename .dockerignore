@@ -1,0 +1,12 @@
+.env
+.env.example
+.git
+.gitignore
+bin/
+tmp/
+*.test
+*.out
+docker-compose.yml
+Makefile
+README.md
+terraform/

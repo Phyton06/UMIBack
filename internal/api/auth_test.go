@@ -101,7 +101,7 @@ func TestAuthFullCycle(t *testing.T) {
 	otpBody := mustMarshal(t, map[string]string{"phone": phone, "role": "rider"})
 	req = httptest.NewRequest("POST", "/auth/request-otp", bytes.NewReader(otpBody))
 	w = httptest.NewRecorder()
-	RequestOTP(mock, auth.Sender{})(w, req)
+	RequestOTP(mock, auth.LogSender{})(w, req)
 
 	resp = w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -333,7 +333,7 @@ func TestRequestOTP_InvalidRole_Returns400(t *testing.T) {
 	body := mustMarshal(t, map[string]string{"phone": "5511111111", "role": "superadmin"})
 	req := httptest.NewRequest("POST", "/auth/request-otp", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	RequestOTP(mock, auth.Sender{})(w, req)
+	RequestOTP(mock, auth.LogSender{})(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusBadRequest {
@@ -466,7 +466,7 @@ func TestRequestOTP_AdminRole_Returns200(t *testing.T) {
 	body := mustMarshal(t, map[string]string{"phone": "5500000001", "role": "admin"})
 	req := httptest.NewRequest("POST", "/auth/request-otp", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	RequestOTP(mock, auth.Sender{})(w, req)
+	RequestOTP(mock, auth.LogSender{})(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {
@@ -586,7 +586,7 @@ func TestRequestOTP_InvalidRoleAdminNowValid_Returns200(t *testing.T) {
 	body := mustMarshal(t, map[string]string{"phone": "5500000001", "role": "admin"})
 	req := httptest.NewRequest("POST", "/auth/request-otp", bytes.NewReader(body))
 	w := httptest.NewRecorder()
-	RequestOTP(mock, auth.Sender{})(w, req)
+	RequestOTP(mock, auth.LogSender{})(w, req)
 
 	resp := w.Result()
 	if resp.StatusCode != http.StatusOK {

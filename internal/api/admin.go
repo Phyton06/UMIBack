@@ -154,29 +154,58 @@ func ListDrivers(pool Pool) http.HandlerFunc {
 
 // ListPassengers retorna una lista paginada de pasajeros (users).
 //
-// Request:  GET /admin/passengers?limit=N&offset=N
+// Request:  GET /admin/passengers?limit=N&offset=N&search=&status=all|active|suspended
 // Response: 200 {passengers: [...], total: N}
 // Errors:   400 si los parámetros son inválidos
+// ponytail: single SQL path with parametrized WHERE clauses, no query builder
 func ListPassengers(pool Pool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		limit := parseIntQuery(r.URL.Query().Get("limit"), 20)
 		offset := parseIntQuery(r.URL.Query().Get("offset"), 0)
+		search := r.URL.Query().Get("search")
+		status := r.URL.Query().Get("status")
+		if status == "" {
+			status = "all"
+		}
 
-		// Total count
+		switch status {
+		case "all", "active", "suspended":
+			// valid
+		default:
+			writeError(w, http.StatusBadRequest, "status must be 'all', 'active', or 'suspended'")
+			return
+		}
+
+		// Build status WHERE clause substring (parametrized, no string concat of values).
+		statusWhere := ""
+		switch status {
+		case "active":
+			statusWhere = "AND (u.suspended_until IS NULL OR u.suspended_until <= now())"
+		case "suspended":
+			statusWhere = "AND u.suspended_until > now()"
+		}
+
+		// Total count — no JOIN needed, just filter on users.
 		var total int
-		err := pool.QueryRow(r.Context(),
-			`SELECT COUNT(*) FROM users`,
-		).Scan(&total)
+		countSQL := `SELECT COUNT(*) FROM users u
+			WHERE ($1 = '' OR u.name ILIKE '%'||$1||'%' OR u.email ILIKE '%'||$1||'%' OR u.phone ILIKE '%'||$1||'%')
+			` + statusWhere
+		err := pool.QueryRow(r.Context(), countSQL, search).Scan(&total)
 		if err != nil {
 			slog.Error("list passengers: count", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
 
-		rows, err := pool.Query(r.Context(),
-			`SELECT id, phone, name, suspended_until, created_at FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
-			limit, offset,
-		)
+		listSQL := `SELECT u.id, u.phone, u.name, u.email, u.rating, u.suspended_until, u.suspension_reason, u.created_at,
+				COUNT(r.id)::int AS trips
+			FROM users u LEFT JOIN rides r ON r.passenger_id = u.id
+			WHERE ($1 = '' OR u.name ILIKE '%'||$1||'%' OR u.email ILIKE '%'||$1||'%' OR u.phone ILIKE '%'||$1||'%')
+			` + statusWhere + `
+			GROUP BY u.id
+			ORDER BY u.created_at DESC LIMIT $2 OFFSET $3`
+
+		rows, err := pool.Query(r.Context(), listSQL, search, limit, offset)
 		if err != nil {
 			slog.Error("list passengers: query", "error", err)
 			writeError(w, http.StatusInternalServerError, "internal error")
@@ -185,30 +214,42 @@ func ListPassengers(pool Pool) http.HandlerFunc {
 		defer rows.Close()
 
 		type passengerRow struct {
-			ID             string    `json:"id"`
-			Phone          string    `json:"phone"`
-			Name           string    `json:"name"`
-			SuspendedUntil *time.Time `json:"suspended_until"`
-			CreatedAt      time.Time `json:"created_at"`
+			ID               string     `json:"id"`
+			Phone            string     `json:"phone"`
+			Name             string     `json:"name"`
+			Email            *string    `json:"email"`
+			Rating           float64    `json:"rating"`
+			Trips            int        `json:"trips"`
+			SuspendedUntil   *time.Time `json:"suspended_until"`
+			SuspensionReason *string    `json:"suspension_reason"`
+			CreatedAt        time.Time  `json:"created_at"`
 		}
 
 		passengers := make([]passengerRow, 0)
 		for rows.Next() {
 			var id uuid.UUID
 			var phone, name string
+			var email *string
+			var rating float64
 			var suspendedUntil *time.Time
+			var suspensionReason *string
 			var createdAt time.Time
-			if err := rows.Scan(&id, &phone, &name, &suspendedUntil, &createdAt); err != nil {
+			var trips int
+			if err := rows.Scan(&id, &phone, &name, &email, &rating, &suspendedUntil, &suspensionReason, &createdAt, &trips); err != nil {
 				slog.Error("list passengers: scan", "error", err)
 				writeError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
 			passengers = append(passengers, passengerRow{
-				ID:             id.String(),
-				Phone:          phone,
-				Name:           name,
-				SuspendedUntil: suspendedUntil,
-				CreatedAt:      createdAt,
+				ID:               id.String(),
+				Phone:            phone,
+				Name:             name,
+				Email:            email,
+				Rating:           rating,
+				Trips:            trips,
+				SuspendedUntil:   suspendedUntil,
+				SuspensionReason: suspensionReason,
+				CreatedAt:        createdAt,
 			})
 		}
 		if rows.Err() != nil {
@@ -346,7 +387,118 @@ func UnsuspendPassenger(pool Pool) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, "passenger not found")
 			return
 		}
+
+		// Mark latest suspension history as unsuspended
+		_, err = pool.Exec(r.Context(),
+			`UPDATE suspension_history SET unsuspended_at = now()
+			 WHERE user_id = $1 AND unsuspended_at IS NULL
+			 AND suspended_until = (SELECT MAX(suspended_until) FROM suspension_history WHERE user_id = $1 AND unsuspended_at IS NULL)`,
+			userID,
+		)
+		if err != nil {
+			slog.Error("unsuspend passenger: update history", "error", err)
+			// non-fatal
+		}
+
 		writeJSON(w, http.StatusOK, map[string]string{"message": "passenger unsuspended"})
+	}
+}
+
+// PassengerStats retorna estadísticas agregadas de pasajeros.
+//
+// Request:  GET /admin/passengers/stats
+// Response: 200 {total, banned, avg_rating}
+func PassengerStats(pool Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var total, banned int
+		var avgRating float64
+		err := pool.QueryRow(r.Context(),
+			`SELECT
+				COUNT(*) AS total,
+				COUNT(*) FILTER (WHERE suspended_until > now()) AS banned,
+				COALESCE(AVG(rating), 0) AS avg_rating
+			FROM users`,
+		).Scan(&total, &banned, &avgRating)
+		if err != nil {
+			slog.Error("passenger stats: query", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"total":      total,
+			"banned":     banned,
+			"avg_rating": avgRating,
+		})
+	}
+}
+
+// BanPassenger suspende un pasajero por una duración determinada.
+//
+// Request:  PATCH /admin/passengers/{id}/ban  {duration, unit}
+// Response: 200 {suspended_until}
+// Errors:   400 si unidad inválida, 404 si no se encuentra el pasajero
+// ponytail: follows SetMembership pattern — same unit validation, same interval logic
+func BanPassenger(pool Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid passenger id")
+			return
+		}
+
+		var body struct {
+			Duration int    `json:"duration"`
+			Unit     string `json:"unit"`
+			Reason   string `json:"reason"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if body.Duration <= 0 {
+			writeError(w, http.StatusBadRequest, "duration must be a positive integer")
+			return
+		}
+
+		switch body.Unit {
+		case "day", "week", "month", "year":
+			// valid
+		default:
+			writeError(w, http.StatusBadRequest, "unit must be 'day', 'week', 'month', or 'year'")
+			return
+		}
+
+		interval := fmt.Sprintf("%d %s", body.Duration, body.Unit)
+		var suspendedUntil time.Time
+		err = pool.QueryRow(r.Context(),
+			`UPDATE users SET suspended_until = now() + $1::interval, suspension_reason = $2, updated_at = now()
+			 WHERE id = $3 RETURNING suspended_until`,
+			interval, body.Reason, userID,
+		).Scan(&suspendedUntil)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "passenger not found")
+			return
+		}
+		if err != nil {
+			slog.Error("ban passenger: update", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		// Insert ban history record
+		_, err = pool.Exec(r.Context(),
+			`INSERT INTO suspension_history (user_id, suspended_until, reason) VALUES ($1, $2, $3)`,
+			userID, suspendedUntil, body.Reason,
+		)
+		if err != nil {
+			slog.Error("ban passenger: insert history", "error", err)
+			// non-fatal — ban succeeded, history is ancillary
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"suspended_until": suspendedUntil,
+		})
 	}
 }
 
@@ -417,4 +569,221 @@ func parseIntQuery(s string, defaultVal int) int {
 		return defaultVal
 	}
 	return v
+}
+
+// BanHistory retorna el historial de suspensiones de un pasajero.
+//
+// Request:  GET /admin/passengers/{id}/ban-history
+// Response: 200 [{suspended_at, suspended_until, reason, unsuspended_at, duration_label}]
+// Errors:   404 si no se encuentra el pasajero
+func BanHistory(pool Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid passenger id")
+			return
+		}
+
+		rows, err := pool.Query(r.Context(),
+			`SELECT suspended_at, suspended_until, COALESCE(reason, ''), unsuspended_at
+			 FROM suspension_history WHERE user_id = $1
+			 ORDER BY suspended_at DESC`,
+			userID,
+		)
+		if err != nil {
+			slog.Error("ban history: query", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		defer rows.Close()
+
+		type historyEntry struct {
+			SuspendedAt    time.Time  `json:"suspended_at"`
+			SuspendedUntil time.Time  `json:"suspended_until"`
+			Reason         string     `json:"reason"`
+			UnsuspendedAt  *time.Time `json:"unsuspended_at"`
+		}
+
+		history := make([]historyEntry, 0)
+		for rows.Next() {
+			var e historyEntry
+			if err := rows.Scan(&e.SuspendedAt, &e.SuspendedUntil, &e.Reason, &e.UnsuspendedAt); err != nil {
+				slog.Error("ban history: scan", "error", err)
+				writeError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			history = append(history, e)
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"history": history,
+		})
+	}
+}
+
+// PassengerLastRide retorna el último viaje completado de un pasajero.
+//
+// Request:  GET /admin/passengers/{id}/last-ride
+// Response: 200 {id, status, pickup_address, dropoff_address, fare, completed_at, driver_name} | 404
+func PassengerLastRide(pool Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid passenger id")
+			return
+		}
+
+		type lastRide struct {
+			ID            string  `json:"id"`
+			Status        string  `json:"status"`
+			PickupAddr    string  `json:"pickup_address"`
+			DropoffAddr   *string `json:"dropoff_address"`
+			Fare          float64 `json:"fare"`
+			CompletedAt   *time.Time `json:"completed_at"`
+		}
+
+		var ride lastRide
+		err = pool.QueryRow(r.Context(),
+			`SELECT id, status, pickup_address, dropoff_address, COALESCE(fare, 0), completed_at
+			 FROM rides WHERE passenger_id = $1 AND status = 'COMPLETED'
+			 ORDER BY completed_at DESC LIMIT 1`,
+			userID,
+		).Scan(&ride.ID, &ride.Status, &ride.PickupAddr, &ride.DropoffAddr, &ride.Fare, &ride.CompletedAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSON(w, http.StatusOK, map[string]any{"ride": nil})
+			return
+		}
+		if err != nil {
+			slog.Error("passenger last ride: query", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{"ride": ride})
+	}
+}
+
+// GetPassenger retorna un pasajero por UUID.
+//
+// Request:  GET /admin/passengers/{id}
+// Response: 200 {id, phone, name, email, rating, trips, suspended_until, suspension_reason, created_at}
+// Errors:   400 si el UUID es inválido, 404 si no se encuentra
+func GetPassenger(pool Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid passenger id")
+			return
+		}
+
+		type passengerRow struct {
+			ID               string     `json:"id"`
+			Phone            string     `json:"phone"`
+			Name             string     `json:"name"`
+			Email            *string    `json:"email"`
+			Rating           float64    `json:"rating"`
+			Trips            int        `json:"trips"`
+			SuspendedUntil   *time.Time `json:"suspended_until"`
+			SuspensionReason *string    `json:"suspension_reason"`
+			CreatedAt        time.Time  `json:"created_at"`
+		}
+
+		var p passengerRow
+		err = pool.QueryRow(r.Context(),
+			`SELECT u.id, u.phone, u.name, u.email, u.rating, u.suspended_until, u.suspension_reason, u.created_at,
+					COUNT(r.id)::int AS trips
+			 FROM users u LEFT JOIN rides r ON r.passenger_id = u.id
+			 WHERE u.id = $1
+			 GROUP BY u.id`,
+			userID,
+		).Scan(&p.ID, &p.Phone, &p.Name, &p.Email, &p.Rating, &p.SuspendedUntil, &p.SuspensionReason, &p.CreatedAt, &p.Trips)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "passenger not found")
+			return
+		}
+		if err != nil {
+			slog.Error("get passenger: query", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, p)
+	}
+}
+
+// GetDriver retorna un conductor por UUID.
+//
+// Request:  GET /admin/drivers/{id}
+// Response: 200 {id, phone, name, available, membresia_active_until, suspended_until, created_at}
+// Errors:   400 si el UUID es inválido, 404 si no se encuentra
+func GetDriver(pool Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		driverID, err := uuid.Parse(r.PathValue("id"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid driver id")
+			return
+		}
+
+		type driverRow struct {
+			ID                   string     `json:"id"`
+			Phone                string     `json:"phone"`
+			Name                 string     `json:"name"`
+			Available            bool       `json:"available"`
+			MembresiaActiveUntil *time.Time `json:"membresia_active_until"`
+			SuspendedUntil       *time.Time `json:"suspended_until"`
+			CreatedAt            time.Time  `json:"created_at"`
+		}
+
+		var d driverRow
+		err = pool.QueryRow(r.Context(),
+			`SELECT id, phone, name, available, membresia_active_until, suspended_until, created_at
+			 FROM drivers WHERE id = $1`,
+			driverID,
+		).Scan(&d.ID, &d.Phone, &d.Name, &d.Available, &d.MembresiaActiveUntil, &d.SuspendedUntil, &d.CreatedAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "driver not found")
+			return
+		}
+		if err != nil {
+			slog.Error("get driver: query", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, d)
+	}
+}
+
+// DashboardStats retorna métricas agregadas para el dashboard admin.
+//
+// Request:  GET /admin/dashboard/stats
+// Response: 200 {total_drivers, active_drivers, pending_rides, rides_today, revenue_today}
+// Errors:   500 si la consulta falla
+func DashboardStats(pool Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var totalDrivers, activeDrivers, pendingRides, ridesToday int
+		var revenueToday float64
+		err := pool.QueryRow(r.Context(),
+			`SELECT
+				COUNT(*) AS total_drivers,
+				COUNT(*) FILTER (WHERE available AND location IS NOT NULL) AS active_drivers,
+				(SELECT COUNT(*) FROM rides WHERE status = 'REQUESTED') AS pending_rides,
+				(SELECT COUNT(*) FROM rides WHERE status = 'COMPLETED' AND completed_at::date = CURRENT_DATE) AS rides_today,
+				(SELECT COALESCE(SUM(fare), 0) FROM rides WHERE status = 'COMPLETED' AND completed_at::date = CURRENT_DATE) AS revenue_today
+			FROM drivers`,
+		).Scan(&totalDrivers, &activeDrivers, &pendingRides, &ridesToday, &revenueToday)
+		if err != nil {
+			slog.Error("dashboard stats: query", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"total_drivers":  totalDrivers,
+			"active_drivers": activeDrivers,
+			"pending_rides":  pendingRides,
+			"rides_today":    ridesToday,
+			"revenue_today":  revenueToday,
+		})
+	}
 }

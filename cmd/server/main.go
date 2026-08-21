@@ -47,7 +47,17 @@ func main() {
 	}
 
 	jwtSecret := []byte(cfg.JWTSecret)
-	sender := auth.Sender{}
+	var sender auth.Sender = auth.LogSender{}
+	if cfg.SMSProvider == "aws_sns" {
+		snsSender, err := auth.NewAWSSNSSender(context.Background(), cfg.SMSAwsSenderID)
+		if err != nil {
+			slog.Error("error al crear SNS sender, usando mock", "error", err)
+		} else {
+			sender = snsSender
+		}
+	} else if cfg.SMSProvider == "twilio" {
+		sender = auth.NewTwilioSender(cfg.TwilioSID, cfg.TwilioToken, cfg.TwilioPhone)
+	}
 
 	// two fixed tiers, no per-endpoint config
 	authTier := api.RateLimit(5, time.Minute, api.ClientIP)
@@ -92,6 +102,14 @@ func main() {
 	mux.Handle("PATCH /admin/passengers/{id}/suspend", adminChain(http.HandlerFunc(api.SuspendPassenger(pool))))
 	mux.Handle("PATCH /admin/passengers/{id}/unsuspend", adminChain(http.HandlerFunc(api.UnsuspendPassenger(pool))))
 	mux.Handle("PATCH /admin/drivers/{id}/membership", adminChain(http.HandlerFunc(api.SetMembership(pool))))
+	mux.Handle("GET /admin/passengers/stats", adminChain(http.HandlerFunc(api.PassengerStats(pool))))
+	mux.Handle("PATCH /admin/passengers/{id}/ban", adminChain(http.HandlerFunc(api.BanPassenger(pool))))
+	mux.Handle("GET /admin/passengers/{id}/ban-history", adminChain(http.HandlerFunc(api.BanHistory(pool))))
+	mux.Handle("GET /admin/passengers/{id}/last-ride", adminChain(http.HandlerFunc(api.PassengerLastRide(pool))))
+	mux.Handle("GET /admin/passengers/{id}", adminChain(http.HandlerFunc(api.GetPassenger(pool))))
+	mux.Handle("GET /admin/drivers/{id}", adminChain(http.HandlerFunc(api.GetDriver(pool))))
+	mux.Handle("GET /admin/dashboard/stats", adminChain(http.HandlerFunc(api.DashboardStats(pool))))
+	mux.Handle("GET /admin/rides/active", adminChain(http.HandlerFunc(api.ActiveRides(pool))))
 
 	// Sweep stale rate-limit entries every 5 minutes
 	api.StartRateLimitSweeper(context.Background(), 5*time.Minute)

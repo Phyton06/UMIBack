@@ -1,6 +1,8 @@
-# Archivos Markdown locales (excepto README.md y openspec/)
+# Archivos Markdown locales (excepto README.md, DEPLOY.md, ARCHITECTURE.md y openspec/)
 *.md
 !README.md
+!DEPLOY.md
+!ARCHITECTURE.md
 !openspec/**
 
 # Entorno local
@@ -14,3 +16,4 @@ skills-lock.json
 
 # Binarios de compilación
 /server
+.terraform/

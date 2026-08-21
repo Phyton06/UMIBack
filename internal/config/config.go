@@ -10,12 +10,17 @@ import (
 
 // Config almacena la configuración de la aplicación.
 type Config struct {
-	HTTPPort      string
-	DatabaseURL   string
-	LogLevel      string
-	JWTSecret     string
-	FareRatePerKm float64
-	FareMinimum   float64
+	HTTPPort       string
+	DatabaseURL    string
+	LogLevel       string
+	JWTSecret      string
+	FareRatePerKm  float64
+	FareMinimum    float64
+	SMSProvider     string // "mock", "aws_sns", o "twilio" (por omisión: "mock")
+	SMSAwsSenderID  string // sender ID opcional para AWS SNS
+	TwilioSID       string // Twilio Account SID
+	TwilioToken     string // Twilio Auth Token
+	TwilioPhone     string // Twilio phone number (from)
 }
 
 // NewConfig lee las variables de entorno y retorna una Config validada.
@@ -47,12 +52,17 @@ func NewConfig() (Config, error) {
 	}
 
 	return Config{
-		HTTPPort:      port,
-		DatabaseURL:   dbURL,
-		LogLevel:      logLevel,
-		JWTSecret:     jwtSecret,
-		FareRatePerKm: parseFloatEnv("FARE_RATE_PER_KM", 8.0),
-		FareMinimum:   parseFloatEnv("FARE_MINIMUM", 25.0),
+		HTTPPort:       port,
+		DatabaseURL:    dbURL,
+		LogLevel:       logLevel,
+		JWTSecret:      jwtSecret,
+		FareRatePerKm:  parseFloatEnv("FARE_RATE_PER_KM", 8.0),
+		FareMinimum:    parseFloatEnv("FARE_MINIMUM", 25.0),
+		SMSProvider:    getEnv("SMS_PROVIDER", "mock"),
+		SMSAwsSenderID: os.Getenv("SMS_SENDER_ID"),
+		TwilioSID:     os.Getenv("TWILIO_ACCOUNT_SID"),
+		TwilioToken:   os.Getenv("TWILIO_AUTH_TOKEN"),
+		TwilioPhone:   os.Getenv("TWILIO_PHONE_NUMBER"),
 	}, nil
 }
 
@@ -68,5 +78,14 @@ func parseFloatEnv(key string, defaultVal float64) float64 {
 		return defaultVal
 	}
 	return f
+}
+
+// getEnv obtiene una variable de entorno con valor por omisión.
+func getEnv(key, defaultVal string) string {
+	v := os.Getenv(key)
+	if v == "" {
+		return defaultVal
+	}
+	return v
 }
 

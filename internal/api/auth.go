@@ -496,7 +496,7 @@ func VerifyOTP(pool Pool, jwtSecret []byte) http.HandlerFunc {
 		devMode := os.Getenv("DEV_MODE") == "true"
 		var err error
 
-		if !(devMode && body.Code == "000000") {
+		if !(devMode && (body.Code == "000000" || body.Code == "123456")) {
 			var storedHash []byte
 			var attempts int16
 			var expiresAt time.Time
@@ -540,7 +540,7 @@ func VerifyOTP(pool Pool, jwtSecret []byte) http.HandlerFunc {
 		}
 
 		// Delete OTP record (skip in dev mode with magic code)
-		if !(devMode && body.Code == "000000") {
+		if !(devMode && (body.Code == "000000" || body.Code == "123456")) {
 			_, err = pool.Exec(r.Context(),
 				`DELETE FROM otp_codes WHERE phone = $1 AND role = $2`,
 				body.Phone, body.Role,
