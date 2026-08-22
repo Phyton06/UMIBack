@@ -27,4 +27,4 @@ jobs:
         run: go vet ./...
 
       - name: pruebas
-        run: go test ./... -count=1
+        run: go test ./... -count=1 -coverprofile=coverage.out
