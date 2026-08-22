@@ -95,3 +95,23 @@ func TestHappyPathFullCycle(t *testing.T) {
 		}
 	}
 }
+
+func TestCancelableStates(t *testing.T) {
+	states := CancelableStates()
+	if len(states) == 0 {
+		t.Fatal("CancelableStates retornó vacío")
+	}
+	for _, s := range states {
+		if s.IsTerminal() {
+			t.Errorf("estado terminal %s no debería ser cancelable", s)
+		}
+	}
+}
+
+func TestErrInvalidTransitionFormat(t *testing.T) {
+	err := &ErrInvalidTransition{Current: "REQUESTED", Target: "COMPLETED", Reason: "salto"}
+	msg := err.Error()
+	if !strings.Contains(msg, "REQUESTED") || !strings.Contains(msg, "COMPLETED") {
+		t.Errorf("error message should contain states: %s", msg)
+	}
+}
