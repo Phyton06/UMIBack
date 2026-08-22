@@ -96,6 +96,59 @@ REQUESTED → ACCEPTED → EN_ROUTE → ARRIVED → STARTED → COMPLETED
 
 Each transition uses `UPDATE ... WHERE status = $expected` to prevent race conditions. Conflict → 409.
 
+## Data Flow
+
+```
+Client → POST /rides (origin, destination)
+  → Validate JWT (rider role)
+  → Insert ride (status=REQUESTED)
+  → Return ride ID + fare estimate
+
+Driver → PATCH /rides/{id}/accept
+  → Validate JWT (driver role)
+  → Check ride is REQUESTED
+  → Atomic update: SET status=ACCEPTED WHERE status=REQUESTED
+  → Conflict → 409 (another driver accepted)
+
+Driver → PATCH /rides/{id}/en-route → arrived → start → complete
+  → Each step: atomic status transition + business logic
+  → Complete: calculate fare via PostGIS ST_DDistance
+
+Client → PATCH /rides/{id}/cancel
+  → From any non-terminal state
+  → Set cancellation_reason
+```
+
+## Database Model (key tables)
+
+| Table | Purpose |
+|-------|---------|
+| `users` | All users (riders + drivers + admins) |
+| `rides` | Trip records with status, coordinates, fare |
+| `driver_locations` | Real-time GPS positions (PostGIS POINT) |
+| `refresh_tokens` | JWT refresh token rotation |
+| `otp_codes` | Temporary OTP for phone verification |
+| `fares` | Fare calculation history |
+
+Full schema: [`ARCHITECTURE.md`](ARCHITECTURE.md)
+
+## Real-time Strategy
+
+- **Driver GPS**: `UPDATE driver_locations SET location = ST_SetSRID(ST_MakePoint($lng, $lat), 4326)` every 5s
+- **Nearby search**: `ST_DWithin(location, ST_SetSRID(ST_MakePoint($lng, $lat), 4326)::geography, $radius_meters)`
+- **Spatial index**: GiST on `location` column — O(log n) proximity queries
+- **No WebSockets yet**: polling-based; WebSockets planned for real-time ride tracking
+
+## Failure Handling
+
+| Scenario | Strategy |
+|----------|----------|
+| Race condition on ride accept | `UPDATE WHERE status = $expected` → 409 Conflict |
+| DB connection loss | pgx pool auto-reconnect, health check `/health` |
+| SMS provider down | Pluggable `Sender` interface — fallback to LogSender in dev |
+| Invalid OTP | Rate limit: 5 requests/min/IP, OTP expires in 5 min |
+| Concurrent status update | Optimistic locking via status field — last write wins with 409 |
+
 ## Configuration
 
 ```bash
