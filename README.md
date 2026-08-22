@@ -5,7 +5,6 @@
 Backend in Go for the UMI ride-hailing platform — real-time geolocation via PostGIS, OTP/JWT authentication, and AWS deployment with Terraform.
 
 > **[Architecture deep-dive](ARCHITECTURE.md)** — system design, database schema, state machine, concurrency model.
-> **[Algorithms in Practice](ALGORITHMS.md)** — 15 real problems solved with data structures and algorithmic patterns.
 
 ## Stack
 
