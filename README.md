@@ -221,7 +221,23 @@ cd terraform && terraform init && terraform apply
 | Build time | 1.7s |
 | Binary size | 21MB |
 | Docker image | ~26MB (alpine:3.21 + binary) |
-| CI pipeline | tidy → build → vet → test (~30s) |
+| CI pipeline | tidy → build → vet → lint → test (~30s) |
+
+## Project Status
+
+| Component | Status |
+|-----------|--------|
+| Auth (JWT + OTP) | ✅ Complete |
+| Ride lifecycle | ✅ Complete |
+| Geospatial (PostGIS) | ✅ Complete |
+| Admin panel (13 endpoints) | ✅ Complete |
+| Rate limiting | ✅ Complete |
+| Unit tests | ✅ 14 test files |
+| Integration tests | ⏳ Unit tests with mocks (no real DB integration tests yet) |
+| Docker | ✅ Multi-stage, ~26MB |
+| CI/CD | ✅ GitHub Actions + Terraform deploy |
+| API docs | ⏳ README tables (no OpenAPI spec yet) |
+| WebSocket real-time | ❌ Not implemented (polling-based) |
 
 ## CI/CD
 
@@ -399,7 +415,7 @@ cd terraform && terraform init && terraform apply
 
 | Workflow | Trigger | Acción |
 |----------|---------|--------|
-| `ci.yml` | Push a `main`/`desarrollo/**`, PRs | tidy → build → vet → test |
+| `ci.yml` | Push a `main`/`desarrollo/**`, PRs | tidy → build → vet → lint → test |
 | `deploy-backend.yml` | Push a `main` (cambios en .go, Dockerfile, go.mod) | Docker build → ECR → ECS deploy |
 | `keepalive.yml` | Cron Lun+Vie 8:00 UTC | Keep-alive del endpoint |
 

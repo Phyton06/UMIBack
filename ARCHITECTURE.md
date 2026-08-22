@@ -228,3 +228,117 @@ Request
 | OTP constant-time compare | Prevents timing attacks on verification |
 | Refresh token breach detection | Revoked reuse -> delete all tokens for user |
 | Dev mode shortcuts | OTP 000000/123456 bypass, code in response body |
+
+## Flows
+
+### Authentication Flow
+
+```
+1. POST /auth/register/rider  (or /driver, /admin)
+   -> Insert into users/drivers/admins table
+   -> Return 201
+
+2. POST /auth/request-otp
+   -> Rate limit: 5 per minute per phone
+   -> Generate 6-digit OTP (crypto/rand)
+   -> Hash with SHA-256, store in otp_codes
+   -> Send via SMS provider (Log in dev, AWS SNS in prod)
+   -> Return 200
+
+3. POST /auth/verify-otp
+   -> Compare hash (constant-time)
+   -> Check attempts < 3, not expired
+   -> Generate JWT access token (1h) + refresh token (30d)
+   -> Store refresh token hash in DB
+   -> Return {access_token, refresh_token}
+
+4. POST /auth/refresh
+   -> Validate refresh token hash
+   -> If revoked -> breach detected -> revoke ALL tokens for user
+   -> Rotate: revoke old, issue new pair
+   -> Return new {access_token, refresh_token}
+
+5. POST /auth/logout
+   -> Revoke all refresh tokens for user
+   -> Return 200
+```
+
+### Ride Flow
+
+```
+1. POST /rides (rider)
+   -> Validate coordinates, address
+   -> Check rider not suspended
+   -> Insert ride with status=REQUESTED
+   -> Return 201
+
+2. GET /rides (driver)
+   -> Returns open REQUESTED rides
+   -> Spatial: rides ordered by pickup distance
+
+3. PATCH /rides/{id}/accept (driver)
+   -> Optimistic lock: UPDATE WHERE status=REQUESTED AND driver_id IS NULL
+   -> Set driver_id, status=ACCEPTED
+   -> 409 if race condition (another driver accepted first)
+
+4. PATCH /rides/{id}/en-route (driver)
+   -> status=ACCEPTED -> EN_ROUTE
+
+5. PATCH /rides/{id}/arrived (driver)
+   -> status=EN_ROUTE -> ARRIVED
+
+6. PATCH /rides/{id}/start (driver)
+   -> status=ARRIVED -> IN_PROGRESS
+
+7. PATCH /rides/{id}/complete (driver)
+   -> status=IN_PROGRESS -> COMPLETED
+   -> Calculate fare: MAX(distance_km * ratePerKm, minimum)
+   -> Update driver availability = true
+   -> Return fare breakdown
+
+Any state (except COMPLETED/CANCELLED):
+   -> PATCH /rides/{id}/cancel (rider or driver)
+   -> status -> CANCELLED
+```
+
+### Geospatial Queries
+
+**Why PostgreSQL + PostGIS:**
+
+- PostGIS extends PostgreSQL with spatial types and functions
+- `GEOMETRY(Point, 4326)` stores lat/lng as WGS84 coordinates
+- GIST index enables fast proximity searches
+- `ST_DWithin(geography, geography, meters)` — indexed nearest-neighbor within radius
+- `ST_Distance(geography, geography)` — accurate distance in meters on Earth's surface
+- `ST_MakePoint(lon, lat)` + `ST_SetSRID(..., 4326)` — create geometry from coordinates
+- `ST_AsText(geometry)` — convert to WKT for API responses
+
+**Nearby drivers query:**
+
+```sql
+SELECT id, name, ST_AsText(location) AS location
+FROM drivers
+WHERE available = true
+  AND ST_DWithin(
+    location::geography,
+    ST_SetSRID(ST_MakePoint($lon, $lat), 4326)::geography,
+    $radius_meters
+  )
+ORDER BY ST_Distance(location::geography, ST_SetSRID(ST_MakePoint($lon, $lat), 4326)::geography)
+```
+
+**Estimate fare query:**
+
+```sql
+SELECT ST_Distance(
+  ST_SetSRID(ST_MakePoint($pickup_lon, $pickup_lat), 4326)::geography,
+  ST_SetSRID(ST_MakePoint($dropoff_lon, $dropoff_lat), 4326)::geography
+) AS distance_meters
+```
+
+**Why not Redis/GeoHash:**
+
+- PostGIS gives us ACID transactions with ride data
+- No need for a separate geospatial store at this scale
+- Single database = simpler deployment and fewer failure modes
+- GIST indexes are fast enough for <10k drivers
