@@ -140,6 +140,16 @@ cd terraform && terraform init && terraform apply
 | `db` | Migration logic |
 | `model` | Valid state machine transitions |
 
+## Engineering Metrics
+
+| Metric | Value |
+|--------|-------|
+| Test coverage | 54.6% (14 test files) |
+| Build time | 1.7s |
+| Binary size | 21MB |
+| Docker image | ~26MB (alpine:3.21 + binary) |
+| CI pipeline | tidy → build → vet → test (~30s) |
+
 ## CI/CD
 
 | Workflow | Trigger | Action |
