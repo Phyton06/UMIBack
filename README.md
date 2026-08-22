@@ -1,5 +1,7 @@
 # UMI Backend
 
+[![CI](https://github.com/Phyton06/UMIBack/actions/workflows/ci.yml/badge.svg)](https://github.com/Phyton06/UMIBack/actions/workflows/ci.yml)
+
 Backend in Go for the UMI ride-hailing platform — real-time geolocation via PostGIS, OTP/JWT authentication, and AWS deployment with Terraform.
 
 ## Stack
